@@ -1,0 +1,19 @@
+# Python
+/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+/.pytest_cache/
+
+# Local configuration
+/.env
+/.env.local
+/config/local.toml
+/.streamlit/secrets.toml
+
+# Translation inputs and outputs created locally
+/tex source/
+/outputs/
+
+# macOS
+.DS_Store
