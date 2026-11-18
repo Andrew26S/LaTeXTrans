@@ -451,6 +451,54 @@ def remove_comments(tex: str) -> str:
 
     return '\n'.join(cleaned)
 
+# Document-level structure that must never be introduced by a translated fragment.
+DOCUMENT_STRUCTURE_PATTERNS = {
+    r"\documentclass": re.compile(r"\\documentclass\s*(?:\[[^\]]*\])?\s*\{[^}]*\}"),
+    r"\begin{document}": re.compile(r"\\begin\s*\{document\}"),
+    r"\end{document}": re.compile(r"\\end\s*\{document\}"),
+}
+
+_CODE_FENCE_PATTERN = re.compile(r"^\s*```[a-zA-Z]*[ \t]*\n(.*?)\n?```\s*$", re.DOTALL)
+
+
+def find_extra_document_structure(src: str, trans: str) -> dict:
+    """
+    Return {element: (src_count, trans_count)} for document-structure commands
+    that occur more often in the translation than in the source.
+    """
+    extras = {}
+    for name, pattern in DOCUMENT_STRUCTURE_PATTERNS.items():
+        src_count = len(pattern.findall(src))
+        trans_count = len(pattern.findall(trans))
+        if trans_count > src_count:
+            extras[name] = (src_count, trans_count)
+    return extras
+
+
+def sanitize_llm_translation(src: str, trans: str) -> str:
+    """
+    Remove artifacts that LLMs tend to add when translating a LaTeX fragment:
+    a wrapping ```latex code fence, and \\documentclass / \\begin{document} /
+    \\end{document} that are not present in the source. Extra occurrences are
+    removed from the end of the translation, keeping the source's count.
+    """
+    if not trans:
+        return trans
+
+    if "```" not in src:
+        fence = _CODE_FENCE_PATTERN.match(trans)
+        if fence:
+            trans = fence.group(1)
+
+    for pattern in DOCUMENT_STRUCTURE_PATTERNS.values():
+        src_count = len(pattern.findall(src))
+        matches = list(pattern.finditer(trans))
+        for match in reversed(matches[src_count:]):
+            trans = trans[:match.start()] + trans[match.end():]
+
+    return trans.strip()
+
+
 def compress_newlines(tex):
     """
     Replace consecutive newlines (including spaces) exceeding four with exactly two newlines.

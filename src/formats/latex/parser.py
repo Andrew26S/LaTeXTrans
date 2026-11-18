@@ -371,9 +371,14 @@ class LatexParser:
         Merge sections that are too short to save the number of api requests
         """
         enc = tiktoken.encoding_for_model("gpt-4")
-        merged_sections = []
+        # Sections "-1" (preamble) and "0" (\begin{document} ... first \section) are never
+        # translated, so they must not be merged with translatable sections. Otherwise
+        # e.g. "0+1" would be sent to the LLM with \begin{document} in it.
+        untranslated_ids = {"-1", "0"}
+        merged_sections = [s for s in self.sections_json if s["section"] in untranslated_ids]
+        sections = [s for s in self.sections_json if s["section"] not in untranslated_ids]
+        num_fixed = len(merged_sections)
         i = 0
-        sections = self.sections_json
 
         while i < len(sections):
             combined_content = sections[i]["content"]
@@ -388,7 +393,7 @@ class LatexParser:
                 total_tokens = len(enc.encode(combined_content))
                 j += 1
 
-            if total_tokens < min_tokens and len(merged_sections) > 0:
+            if total_tokens < min_tokens and len(merged_sections) > num_fixed:
                 merged_sections[-1]["content"] += "\n" + combined_content
                 merged_sections[-1]["section"] += "+" + "+".join(combined_section_ids)
                 print(merged_sections[-1]["section"])

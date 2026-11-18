@@ -585,7 +585,7 @@ class TranslatorAgent(BaseToolAgent):
                 async with session.post(self.base_url, json=payload, headers=headers, timeout=self.timeout) as response:
                     response.raise_for_status()
                     result = await response.json()
-                    return result["choices"][0]["message"]["content"].strip()
+                    return sanitize_llm_translation(text, result["choices"][0]["message"]["content"].strip())
 
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 if attempt < 3:
@@ -636,7 +636,7 @@ class TranslatorAgent(BaseToolAgent):
                 async with session.post(self.base_url, json=payload, headers=headers, timeout=self.timeout) as response:
                     response.raise_for_status()
                     result = await response.json()
-                    return result["choices"][0]["message"]["content"].strip()
+                    return sanitize_llm_translation(text, result["choices"][0]["message"]["content"].strip())
 
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 if attempt < 3:
@@ -691,7 +691,7 @@ class TranslatorAgent(BaseToolAgent):
                 async with session.post(self.base_url, json=payload, headers=headers, timeout=self.timeout) as response:
                     response.raise_for_status()
                     result = await response.json()
-                    return result["choices"][0]["message"]["content"].strip()
+                    return sanitize_llm_translation(part["content"], result["choices"][0]["message"]["content"].strip())
 
             except requests.exceptions.RequestException as e:
                 # print(f"Warning: request {attempt} failed for {fail_part}: {e}")

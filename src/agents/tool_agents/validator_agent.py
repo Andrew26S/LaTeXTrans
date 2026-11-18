@@ -1,5 +1,6 @@
 from typing import Dict, Any, List, Optional
 from src.agents.tool_agents.base_tool_agent import BaseToolAgent
+from src.formats.latex.utils import find_extra_document_structure
 # from base_tool_agent import BaseToolAgent
 from pathlib import Path
 from collections import Counter
@@ -82,23 +83,32 @@ class ValidatorAgent(BaseToolAgent):
         content = part.get("content", "")
         trans = part.get("trans_content", "")
 
+        messages = []
+        extra_structure = find_extra_document_structure(content, trans)
+        if extra_structure:
+            messages.append(
+                "Unexpected document-level LaTeX commands added in translation (remove them):\n"
+                + "\n".join(
+                    f"'{elem}' — expected {src_count}, found {trans_count}"
+                    for elem, (src_count, trans_count) in extra_structure.items()
+                )
+            )
+
         # src_counter = self._extract_latex_elements_with_counts(content)
         # trans_counter = self._extract_latex_elements_with_counts(trans)
         src_counter = self.extract_command_counts(content)
         trans_counter = self.extract_command_counts(trans)
-        if src_counter == trans_counter:
-            return None
+        if src_counter != trans_counter:
+            errors = []
+            for elem, count in src_counter.items():
+                match = re.findall(re.escape(elem), trans)
+                # trans_count = trans_counter.get(elem, 0)
+                if len(match) < count:
+                    errors.append(f"'{elem}' — expected {count}, found {len(match)}")
+            if errors:
+                messages.append("LaTeX command translation error or is missing:\n" + "\n".join(errors))
 
-        errors = []
-        for elem, count in src_counter.items():
-            match = re.findall(re.escape(elem), trans)
-            # trans_count = trans_counter.get(elem, 0)
-            if len(match) < count:
-                errors.append(f"'{elem}' — expected {count}, found {len(match)}")
-
-        if errors:
-            return "LaTeX command translation error or is missing:\n" + "\n".join(errors)
-        return None        
+        return "\n".join(messages) if messages else None
 
     def _validate_placeholder(self, part :Dict[str, Any])-> Optional[str]:
 
