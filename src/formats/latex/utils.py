@@ -522,7 +522,7 @@ def get_env_pattern(command_name):
 
 def get_abstract_pattern():
     """
-    Get the regex pattern for matching \begin{abstract} and \end{abstract} commands.
+    Get the regex pattern for matching \\begin{abstract} and \\end{abstract} commands.
     """
     command_name = r'abstract'
     get_command_env = lambda name: rf"\\begin{spaces}\{{({name})\}}{spaces}({options})?(.*?)\\end{spaces}\{{\1\}}"
@@ -532,7 +532,7 @@ def get_abstract_pattern():
 
 def get_keywords_pattern():
     """
-    Get the regex pattern for matching \keywords commands.
+    Get the regex pattern for matching \\keywords commands.
     """
     command_name = r'keywords'
     command = get_pattern_command_full(command_name)

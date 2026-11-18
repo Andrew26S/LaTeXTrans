@@ -84,6 +84,7 @@ model = " " # model name (For example, deepseek-chat)
 api_key = " " # your_api_key_here
 base_url = " " # base url of the API (For example, https://api.deepseek.com/v1/chat/completions)
 timeout = 100 # LLM request timeout in seconds (default: 100)
+# max_tokens = 8192 # optional output-token cap, only sent when set (check your model's limit)
 ```
 
  > [!NOTE]

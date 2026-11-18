@@ -19,6 +19,12 @@ from src.utils.progress import st
 base_dir = os.getcwd()
 sys.path.append(base_dir)
 
+MAX_RETRY_AFTER_SECONDS = 60.0
+
+
+class LLMRequestError(Exception):
+    """Raised when an LLM request still fails after all retries."""
+
 
 class TranslatorAgent(BaseToolAgent):
     def __init__(self, 
@@ -38,6 +44,11 @@ class TranslatorAgent(BaseToolAgent):
         self.base_url = config["llm_config"].get("base_url", None)
         self.API_KEY = config["llm_config"].get("api_key", None)
         self.timeout = float(config["llm_config"].get("timeout", 100))
+        # Optional output-token cap; omitted from requests unless configured, since
+        # limits and parameter names differ between OpenAI-compatible providers.
+        self.max_tokens = config["llm_config"].get("max_tokens")
+        self.max_attempts = 3
+        self.retry_base_delay = 5.0
         self.user_term = config.get("user_term", None)
         self.target_language = config.get("target_language", "ch")
         self.category = config.get("category", None)
@@ -558,49 +569,101 @@ class TranslatorAgent(BaseToolAgent):
 
         return transed_env
 
+    def _build_payload(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        payload = {
+            "model": f"{self.model}",
+            "messages": messages,
+            "temperature": 0.7,
+        }
+        if self.max_tokens:
+            payload["max_tokens"] = self.max_tokens
+        return payload
+
+    def _retry_delay(self, attempt: int, retry_after: Optional[str] = None) -> float:
+        """
+        Seconds to wait before the next attempt: honour a numeric Retry-After header
+        (capped), otherwise exponential backoff from retry_base_delay.
+        """
+        if retry_after:
+            try:
+                return min(max(float(retry_after), 0.0), MAX_RETRY_AFTER_SECONDS)
+            except ValueError:
+                pass
+        return self.retry_base_delay * (2 ** (attempt - 1))
+
+    async def _post_chat(self, payload: Dict[str, Any], session: aiohttp.ClientSession) -> str:
+        """
+        POST an OpenAI-compatible chat completion request and return the stripped message content.
+
+        Retries on network errors, timeouts, HTTP 429/5xx and malformed or empty responses.
+        Other HTTP errors (400, 401, 403, 404, ...) fail immediately since retrying cannot help.
+        Raises LLMRequestError when the request ultimately fails.
+        """
+        headers = {
+            "Authorization": f"Bearer {self.API_KEY}",
+            "Content-Type": "application/json"
+        }
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
+        last_error = "unknown error"
+
+        for attempt in range(1, self.max_attempts + 1):
+            retry_after = None
+            try:
+                async with session.post(self.base_url, json=payload, headers=headers, timeout=timeout) as response:
+                    if response.status >= 400:
+                        body = (await response.text())[:300]
+                        last_error = f"HTTP {response.status}: {body}"
+                        if response.status != 429 and response.status < 500:
+                            raise LLMRequestError(last_error)
+                        retry_after = response.headers.get("Retry-After")
+                    else:
+                        result = await response.json(content_type=None)
+                        choice = result["choices"][0]
+                        content = choice["message"]["content"]
+                        if not isinstance(content, str) or not content.strip():
+                            raise ValueError("empty message content")
+                        if choice.get("finish_reason") == "length":
+                            self.log("Warning: LLM output was truncated (finish_reason=length).")
+                        return content.strip()
+            except LLMRequestError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = f"{type(e).__name__}: {e or f'no response within {self.timeout}s'}"
+            except (ValueError, KeyError, IndexError, TypeError) as e:
+                # ValueError also covers JSON decode errors
+                last_error = f"malformed response ({type(e).__name__}: {e})"
+
+            if attempt < self.max_attempts:
+                await asyncio.sleep(self._retry_delay(attempt, retry_after))
+
+        raise LLMRequestError(f"failed after {self.max_attempts} attempts, last error: {last_error}")
+
+    def _mark_fail_part(self, fail_part: str, type: str) -> None:
+        self.have_fail_parts = True
+        if type == 'sec':
+            self.fail_section_nums.append(fail_part)
+        elif type == 'cap':
+            self.fail_caption_phs.append(fail_part)
+        else:
+            self.fail_env_phs.append(fail_part)
+
     async def _request_llm_for_trans(self,
                                      system_prompt: str,
                                      text: str,
                                      fail_part: str,
                                      type: str,
                                      session: aiohttp.ClientSession) -> str:
-        
-        payload = {
-            "model": f"{self.model}",
-            "messages": [
-                {"role": "system", "content": f"{system_prompt}"},
-                {"role": "user", "content": f"{text}"}
-            ],
-            "temperature": 0.7,
-            "max_new_tokens": 8192
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        for attempt in range(1, 4):
-            try:
-                async with session.post(self.base_url, json=payload, headers=headers, timeout=self.timeout) as response:
-                    response.raise_for_status()
-                    result = await response.json()
-                    return sanitize_llm_translation(text, result["choices"][0]["message"]["content"].strip())
-
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                if attempt < 3:
-                    await asyncio.sleep(5)
-                else:
-                    self.have_fail_parts = True
-                    if type == 'sec':
-                        self.fail_section_nums.append(fail_part)
-                    elif type == 'cap':
-                        self.fail_caption_phs.append(fail_part)
-                    else:
-                        self.fail_env_phs.append(fail_part)
-
-                    print(f"Failed to translate text, return original text: {fail_part}. {e}")
-                    return text
+        payload = self._build_payload([
+            {"role": "system", "content": f"{system_prompt}"},
+            {"role": "user", "content": f"{text}"}
+        ])
+        try:
+            content = await self._post_chat(payload, session)
+        except LLMRequestError as e:
+            self._mark_fail_part(fail_part, type)
+            print(f"Failed to translate text, return original text: {fail_part}. {e}")
+            return text
+        return sanitize_llm_translation(text, content)
 
     async def _request_llm_for_trans_with_terms(self,
                                           system_prompt: str,
@@ -608,51 +671,23 @@ class TranslatorAgent(BaseToolAgent):
                                           fail_part: str,
                                           type: str,
                                           session: aiohttp.ClientSession) -> str:
-
-        payload = {
-            "model": f"{self.model}",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": f"{system_prompt}\nWhen translating, you must strictly use the following glossary for substitution. This is the highest priority rule to ensure the consistency of terms throughout the text.\n<Glossary>:\n{self.term_dict}\nNow, please translate the following new paragraph. Maintain the terminology from the glossary provided."
-                },
-                {
-                    "role": "user",
-                    "content": f"[Current LaTeX Paragraph]:\n{text}"
-                }
-            ],
-            "temperature": 0.7,
-            # "max_length": 100000,
-            "max_new_tokens": 8192
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        for attempt in range(1, 4):
-            try:
-                async with session.post(self.base_url, json=payload, headers=headers, timeout=self.timeout) as response:
-                    response.raise_for_status()
-                    result = await response.json()
-                    return sanitize_llm_translation(text, result["choices"][0]["message"]["content"].strip())
-
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                if attempt < 3:
-                    await asyncio.sleep(5)
-                else:
-                    self.have_fail_parts = True
-                    if type == 'sec':
-                        self.fail_section_nums.append(fail_part)
-                    elif type == 'cap':
-                        self.fail_caption_phs.append(fail_part)
-                    else:
-                        self.fail_env_phs.append(fail_part)
-
-                    print(f"Failed to translate text, return original text: {fail_part}. {e}")
-
-                    return text
+        payload = self._build_payload([
+            {
+                "role": "system",
+                "content": f"{system_prompt}\nWhen translating, you must strictly use the following glossary for substitution. This is the highest priority rule to ensure the consistency of terms throughout the text.\n<Glossary>:\n{self.term_dict}\nNow, please translate the following new paragraph. Maintain the terminology from the glossary provided."
+            },
+            {
+                "role": "user",
+                "content": f"[Current LaTeX Paragraph]:\n{text}"
+            }
+        ])
+        try:
+            content = await self._post_chat(payload, session)
+        except LLMRequestError as e:
+            self._mark_fail_part(fail_part, type)
+            print(f"Failed to translate text, return original text: {fail_part}. {e}")
+            return text
+        return sanitize_llm_translation(text, content)
 
     async def _request_llm_for_retrans_error_parts(self,
                                                    system_prompt: str,
@@ -663,90 +698,41 @@ class TranslatorAgent(BaseToolAgent):
                                                    session: aiohttp.ClientSession) -> str:
 
         user_prompt = f"[Original]:\n{part['content']}\n[Translation]:\n{part['trans_content']}\n[Error]:\n{error_message}"
-        # print(user_prompt,'\n')
-        payload = {
-            "model": f"{self.model}",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": f"{system_prompt}\nWhen translating, you must strictly use the following glossary for substitution. This is the highest priority rule to ensure the consistency of terms throughout the text.\n<Glossary>:\n{self.term_dict}\nNow, please translate the following new paragraph. Maintain the terminology from the glossary provided."
-                },
-                {
-                    "role": "user",
-                    "content": f"{user_prompt}"
-                }
-            ],
-            "temperature": 0.7,
-            # "max_length": 100000,
-            "max_new_tokens": 8192
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        for attempt in range(1, 4):
-            try:
-                async with session.post(self.base_url, json=payload, headers=headers, timeout=self.timeout) as response:
-                    response.raise_for_status()
-                    result = await response.json()
-                    return sanitize_llm_translation(part["content"], result["choices"][0]["message"]["content"].strip())
-
-            except requests.exceptions.RequestException as e:
-                # print(f"Warning: request {attempt} failed for {fail_part}: {e}")
-                if attempt < 3:
-                    await asyncio.sleep(5)
-                else:
-                    self.have_fail_parts = True
-                    if type == 'sec':
-                        self.fail_section_nums.append(fail_part)
-                    elif type == 'cap':
-                        self.fail_caption_phs.append(fail_part)
-                    else:
-                        self.fail_env_phs.append(fail_part)
-
-                    print(f"Failed to translate text, return original text: {fail_part}. {e}")
-                    return part["trans_content"]
+        payload = self._build_payload([
+            {
+                "role": "system",
+                "content": f"{system_prompt}\nWhen translating, you must strictly use the following glossary for substitution. This is the highest priority rule to ensure the consistency of terms throughout the text.\n<Glossary>:\n{self.term_dict}\nNow, please translate the following new paragraph. Maintain the terminology from the glossary provided."
+            },
+            {
+                "role": "user",
+                "content": f"{user_prompt}"
+            }
+        ])
+        try:
+            content = await self._post_chat(payload, session)
+        except LLMRequestError as e:
+            self._mark_fail_part(fail_part, type)
+            print(f"Failed to retranslate text, keep previous translation: {fail_part}. {e}")
+            return part["trans_content"]
+        return sanitize_llm_translation(part["content"], content)
 
     async def _request_llm_for_extract_terms(self, system_prompt, src, tgt,
                                        session: aiohttp.ClientSession) -> str:
-
-        payload = {
-            "model": f"{self.model}",
-            "messages": [
-                {
-                    "role": "system", 
-                    "content": f"{system_prompt}"
-                },
-                {
-                    "role": "user", 
-                    "content": f"<en source>\n{src}\n<zh translation>\n{tgt}"
-                }
-            ],
-            "temperature": 0.7,
-            # "max_length": 100000,
-            # "max_tokens": 50
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        for attempt in range(1, 4):
-            try:
-                async with session.post(self.base_url, json=payload, headers=headers, timeout=self.timeout) as response:
-                    response.raise_for_status()
-                    result = await response.json()
-                    return result["choices"][0]["message"]["content"].strip()
-
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                if attempt < 3:
-                    await asyncio.sleep(5)
-                else:
-                    print("Warning: failed to extract terms, set N/A.")
-                    return "N/A"
+        payload = self._build_payload([
+            {
+                "role": "system",
+                "content": f"{system_prompt}"
+            },
+            {
+                "role": "user",
+                "content": f"<en source>\n{src}\n<zh translation>\n{tgt}"
+            }
+        ])
+        try:
+            return await self._post_chat(payload, session)
+        except LLMRequestError as e:
+            print(f"Warning: failed to extract terms, set N/A. {e}")
+            return "N/A"
 
     def _request_llm_for_summary(self, system_prompt: str, text: str) -> str:
         """
@@ -765,8 +751,6 @@ class TranslatorAgent(BaseToolAgent):
                 }
             ],
             "temperature": 0.7,
-            # "max_length": 100000,
-            "max_new_tokens": 8192
         }
 
         headers = {
@@ -805,8 +789,6 @@ class TranslatorAgent(BaseToolAgent):
                 }
             ],
             "temperature": 0.7,
-            # "max_length": 100000,
-            "max_new_tokens": 8192
         }
 
         headers = {

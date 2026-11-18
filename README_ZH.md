@@ -82,6 +82,7 @@ model = " " # model name (For example, deepseek-chat)
 api_key = " " # your_api_key_here
 base_url = " " # base url of the API (For example, https://api.deepseek.com/v1/chat/completions)
 timeout = 300 # LLM 请求超时时间,单位秒（默认100）
+# max_tokens = 8192 # 可选，单次输出 token 上限，设置后才会发送（请确认模型支持的上限）
 ```
 
  > [!NOTE]
