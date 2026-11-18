@@ -451,6 +451,70 @@ def remove_comments(tex: str) -> str:
 
     return '\n'.join(cleaned)
 
+# Environments whose content is never translated (math, code, floats, tables, drawings, ...).
+NO_TRANSLATE_ENVS = {
+    # display math
+    'equation', 'equation*', 'align', 'align*', 'alignat', 'alignat*', 'flalign', 'flalign*',
+    'gather', 'gather*', 'multline', 'multline*', 'split', 'split*', 'cases', 'cases*', 'subequations',
+    'eqnarray', 'eqnarray*', 'displaymath', 'math', 'aligned', 'alignedat', 'gathered', 'dcases', 'rcases',
+    'array', 'matrix', 'pmatrix', 'bmatrix', 'Bmatrix', 'vmatrix', 'Vmatrix', 'smallmatrix',
+    # code
+    'verbatim', 'verbatim*', 'Verbatim', 'lstlisting', 'lstlisting*', 'minted', 'minted*',
+    # floats, tables and drawings
+    'figure', 'figure*', 'wrapfigure', 'SCfigure', 'tikzpicture', 'scope', 'CJK',
+    'table', 'table*', 'tabular', 'tabular*', 'tabularx', 'tabulary', 'longtable', 'longtable*', 'sidewaystable',
+    'tcolorbox',
+    # bibliography and algorithms
+    'thebibliography', 'bibliography', 'bibitem',
+    'algorithm', 'algorithm*', 'algorithmic', 'algorithmic*', 'algorithmicx', 'algorithmicx*', 'algorithm2e',
+}
+
+# Environments that are always translated, whatever their content looks like.
+ALWAYS_TRANSLATE_ENVS = {'abstract'}
+
+# Minimum number of natural-language words for an environment to be translated.
+MIN_NATURAL_LANGUAGE_WORDS = 2
+
+_MACRO_PARAM_PATTERN = re.compile(r"(?<!\\)#\d")
+_PLACEHOLDER_PATTERN = re.compile(r"<PLACEHOLDER_[^>]*>")
+# Runs of 2+ letters in any script (excludes digits and underscores).
+_WORD_PATTERN = re.compile(r"[^\W\d_]{2,}")
+_CJK_PATTERN = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯]")
+
+
+def env_has_natural_language(content: str) -> bool:
+    """
+    Decide locally whether a LaTeX environment contains human-readable text that should be
+    translated. Math, macro parameters (#1) and placeholders are ignored. When the content
+    cannot be parsed, the environment is translated: the translation prompt keeps
+    non-text content unchanged, while a false negative would leave text untranslated.
+    """
+    if _MACRO_PARAM_PATTERN.search(content):
+        # Body of a macro/environment definition, not document text.
+        return False
+
+    content = _PLACEHOLDER_PATTERN.sub(" ", content)
+    try:
+        text = LatexNodes2Text(math_mode='remove').latex_to_text(content)
+    except Exception:
+        return True
+
+    if len(_CJK_PATTERN.findall(text)) >= 2:
+        return True
+    return len(_WORD_PATTERN.findall(text)) >= MIN_NATURAL_LANGUAGE_WORDS
+
+
+def env_need_trans(env_name: str, content: str) -> bool:
+    if env_name in ALWAYS_TRANSLATE_ENVS:
+        return True
+    if env_name in NO_TRANSLATE_ENVS:
+        return False
+    if re.search(r"<PLACEHOLDER_CAP_\d+>", content):
+        # Captions inside this environment are translated separately.
+        return False
+    return env_has_natural_language(content)
+
+
 # Document-level structure that must never be introduced by a translated fragment.
 DOCUMENT_STRUCTURE_PATTERNS = {
     r"\documentclass": re.compile(r"\\documentclass\s*(?:\[[^\]]*\])?\s*\{[^}]*\}"),

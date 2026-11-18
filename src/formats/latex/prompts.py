@@ -20,7 +20,6 @@ env_system_prompt = None
 caption_system_prompt_with_dict = None
 section_system_prompt_with_dict = None
 env_system_prompt_with_dict = None
-set_need_trans_for_envs_system_prompt = None
 retrans_error_parts_system_prompt = None
 extract_terminology_system_prompt = None
 refine_summary_system_prompt = None
@@ -34,7 +33,7 @@ section_system_prompt_with_terms_prev = None
 
 def init_prompts(source_lang: str, target_lang: str):
     global caption_system_prompt, section_system_prompt, env_system_prompt, caption_system_prompt_with_dict, section_system_prompt_with_dict, \
-        env_system_prompt_with_dict, set_need_trans_for_envs_system_prompt, retrans_error_parts_system_prompt, extract_terminology_system_prompt, \
+        env_system_prompt_with_dict, retrans_error_parts_system_prompt, extract_terminology_system_prompt, \
         get_summary_system_prompt, refine_summary_system_prompt, section_system_prompt_with_sum, caption_system_prompt_with_sum, env_system_prompt_with_sum, \
         section_system_prompt_with_terms_sum, section_system_prompt_with_prev, section_system_prompt_with_terms_prev
 
@@ -156,72 +155,6 @@ def init_prompts(source_lang: str, target_lang: str):
     7.Ensure that the translated text is accurate, coherent, and follows academic writing conventions in the target language.Maintain consistent academic terminology and use standard abbreviations where appropriate.
     8.Directly output only the translated LaTeX code without any additional explanations, formatting markers, or comments such as "```latex".
     9.<PLACEHOLDER_CAP_...>,<PLACEHOLDER_ENV_...>,<PLACEHOLDER_..._begin> and <PLACEHOLDER_..._end> are placeholders for artificial environments or captions. Please do not let them affect your translation and keep these placeholders after translation.
-    """
-
-    set_need_trans_for_envs_system_prompt = rf"""
-    You are a LaTeX translation assistant.
-    
-    Your task is to analyze the **content inside any LaTeX environment**, regardless of its environment name, and determine whether it should be translated when translating an academic paper.
-    
-     Environment names can be custom-defined (e.g., `mybox`, `resultblock`, `customalgo`) and should be ignored during judgment. Only base your decision on the **content itself**.
-    
-    ---
-    
-    Return:
-    - `True` → if the content includes human-readable natural language that contributes meaning to the paper and should be translated.
-    - `False` → if the content includes only non-linguistic content such as code, markup, equations, math expressions, tables, graphics instructions, or any content not meant for human reading.
-    
-    ---
-    
-    ### Return `True` if the content:
-    - Contains complete or partial sentences written in natural language (e.g., {source_lang}), such as explanations, definitions, figure/table captions, theorem statements, or descriptions.
-    - Helps the reader understand the paper and would lose meaning if left untranslated.
-    
-    ### Return `False` if the content:
-    - Contains only code, pseudocode, mathematical formulas, drawing instructions (e.g., TikZ), formatting macros, or raw markup.
-    - Does not include any human-readable sentences or phrases.
-    
-    ---
-    
-    Only output:
-    - `True` or `False` 
-    - No explanations or additional text
-    
-    ---
-    
-    Examples:
-    
-    Input:
-    \begin{{mybox}}
-    A graph is connected if there is a path between every pair of vertices.
-    \end{{mybox}}
-    true
-    
-    Input:
-    \begin{{customcode}}
-    for i in range(10):
-    print(i)
-    \end{{customcode}}
-    false
-    
-    Input:
-    \begin{{randomenv}}
-    \draw[->] (0,0) -- (1,1);
-    \end{{randomenv}}
-    false
-    
-    Input:
-    \begin{{something}}
-    \caption{{The architecture of our model.}}
-    \includegraphics{{fig1.png}}
-    \end{{something}}
-    true
-    
-    Input:
-    \begin{{eqnarray}}
-      \bm{{x}}_{{\mathrm{{regressor}}}}=[\bm{{h}}_{{\hat{{y}}}};\bm{{h}}_{{x}};\bm{{h}}_{{\hat{{y}}}}\odot\bm{{h}}_{{x}};|\bm{{h}}_{{\hat{{y}}}}-\bm{{h}}_{{x}}|]
-    \end{{eqnarray}}
-    false
     """
 
     retrans_error_parts_system_prompt = rf"""

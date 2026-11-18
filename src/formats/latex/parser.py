@@ -70,6 +70,8 @@ class LatexParser:
 
             if section["section"] == "0" or section["section"] == "-1":
                 section_content = self._extract_captions(section["content"])
+                # Environments here are still judged by content: some templates put
+                # \begin{abstract} before \begin{document}, while macro definitions (#1) are skipped.
                 self.sections_json[i]["trans_content"] = self._extract_envs(section_content)
                 self.sections_json[i]["content"] = self.sections_json[i]["trans_content"]
             else:
@@ -147,19 +149,11 @@ class LatexParser:
         """
         Extract all the environments in the full tex and generate a json file for the environments.
         The environments are replaced with placeholders in the full tex.
+        need_trans is decided locally by env_need_trans().
         """
         full_tex = remove_comments(tex)
         command_name = r'.*?'
         pattern_env = get_env_pattern(command_name) # \begin{env}...\end{env} or \begin{env}...\end{env}* or \begin{env}[options]...\end{env}
-        placeholder_pattern_cap= r"<PLACEHOLDER_CAP_\d+>"
-        no_translate_envs = [
-                             'equation', 'align', 'align*', 'gather', 'gather*', 'verbatim', 'verbatim*', 'lstlisting*', 'minted', 'minted*',
-                             'equation*', 'alignat', 'alignat*', 'flalign', 'flalign*', 'split', 'split*', 'cases', 'cases*', 'subequations', 
-                             'figure', 'figure*', 'wrapfigure', 'SCfigure', 'tikzpicture', 'CJK', 'scope',
-                             'tabularx', 'tabulary', 'longtable*', 'sidewaystable', 'table', 'table*', 'tabular', 'tabular*', 'longtable',
-                             'multline', 'multline*', 'lstlisting', 'tcolorbox', 'thebibliography', 'bibliography', 'bibitem',
-                             'algorithm', 'algorithmic', 'algorithmicx', 'algorithm2e', 'algorithmicx*', 'algorithmic*', 'algorithm*'
-                             ]
         while True:
             result = pattern_env.search(full_tex)
             if result is None:
@@ -167,16 +161,8 @@ class LatexParser:
             self.env_count += 1
             env_name = result.group(1)
             env_content = result.group(0)
-            placeholders_cap_in_env = re.findall(placeholder_pattern_cap, env_content)
 
-            need_trans = True
-
-            if env_name in no_translate_envs:
-                need_trans = False
-
-            if placeholders_cap_in_env:
-                # If there are placeholders in the environment, we do not translate it.
-                need_trans = False
+            need_trans = env_need_trans(env_name, env_content)
 
             placeholder = f"<PLACEHOLDER_ENV_{self.env_count}>"
             full_tex = full_tex.replace(env_content, placeholder, 1)
@@ -187,7 +173,7 @@ class LatexParser:
                 "trans_content": '',
                 "need_trans": need_trans
             })
-        
+
         return full_tex
 
     def _extract_captions(self, tex: str) -> str:
