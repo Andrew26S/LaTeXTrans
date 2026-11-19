@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import AsyncMock, patch
 
 from src.agents import coordinator_agent
@@ -57,11 +58,29 @@ class ProjectResultTests(unittest.TestCase):
             (previous / "main.pdf").write_bytes(b"old build")
             compiler = LaTexCompiler(directory)
 
-            def build_figure(tex_file, out_dir):
-                Path(out_dir, "figure.pdf").write_bytes(b"not the paper")
+            def build_figure(cmd, **kwargs):
+                out_dir = Path(next(arg.removeprefix("-outdir=") for arg in cmd if arg.startswith("-outdir=")))
+                report = Path(next(arg.removeprefix("-deps-out=") for arg in cmd if arg.startswith("-deps-out=")))
+                (out_dir / "figure.pdf").write_bytes(b"not the paper")
+                report.write_text(f"{out_dir / 'main.pdf'} : main.tex")
+                return CompletedProcess(cmd, 0)
 
-            with (
-                patch.object(compiler, "_compile_with_pdflatex", side_effect=build_figure),
-                patch.object(compiler, "_compile_with_xelatex", side_effect=build_figure),
-            ):
+            with patch("src.formats.latex.compile.subprocess.run", side_effect=build_figure):
                 self.assertIsNone(compiler.compile())
+
+    def test_failed_pdf_is_rejected_and_fallback_uses_reported_jobname(self):
+        with tempfile.TemporaryDirectory(prefix="paper with spaces ") as directory:
+            root = Path(directory)
+            (root / "main.tex").write_text(r"\documentclass{article}")
+            compiler = LaTexCompiler(directory)
+
+            def run_engine(cmd, **kwargs):
+                build = root / ("build_pdflatex" if "-pdflatex" in cmd else "build_xelatex")
+                pdf = build / "custom job.pdf"
+                pdf.write_bytes(b"partial or complete")
+                report = Path(next(arg.removeprefix("-deps-out=") for arg in cmd if arg.startswith("-deps-out=")))
+                report.write_text(f"#===Dependents, and related info, for main.tex:\n{pdf.relative_to(root)} : main.tex")
+                return CompletedProcess(cmd, 12 if "-pdflatex" in cmd else 0)
+
+            with patch("src.formats.latex.compile.subprocess.run", side_effect=run_engine):
+                self.assertEqual(compiler.compile(), str(root / "build_xelatex" / "custom job.pdf"))

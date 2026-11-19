@@ -1,200 +1,71 @@
-import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 
 from .utils import find_main_tex_file
 
+
 class LaTexCompiler:
     def __init__(self, output_latex_dir: str):
         self.output_latex_dir = output_latex_dir
 
     def compile(self):
-        """
-        Compile the LaTeX document .
-        """
-        tex_file_to_compile = find_main_tex_file(self.output_latex_dir)
-        if not tex_file_to_compile:
-            print("⚠️ Warning: There is no main tex file to compile in this directory.")
-            return None
-        pdf_name = Path(tex_file_to_compile).with_suffix(".pdf").name
-        for engine, compile_tex in (
-            ("pdflatex", self._compile_with_pdflatex),
-            ("xelatex", self._compile_with_xelatex),
-        ):
-            build_dir = Path(self.output_latex_dir, f"build_{engine}")
-            try:
-                build_dir.mkdir()
-            except FileExistsError:
-                # A local source tree can include an earlier build of the same paper.
-                build_dir = Path(tempfile.mkdtemp(prefix=f"build_{engine}_", dir=self.output_latex_dir))
-
-            print(f"Compiling with {engine} in {build_dir}...")
-            compile_tex(tex_file_to_compile, str(build_dir))
-            pdf = build_dir / pdf_name
-            if pdf.is_file() and pdf.stat().st_size:
-                return str(pdf)
-            print(f"{engine} produced no translated PDF. See {build_dir} for logs.")
-        return None
+        return self._compile(("pdflatex", "xelatex"))
 
     def compile_ja(self):
-        """
-        Compile the LaTeX document .
-        """
-        tex_file_to_compile = find_main_tex_file(self.output_latex_dir)
-        if not tex_file_to_compile:
-            print("⚠️ Warning: There is no main tex file to compile in this directory.")
-            return None
-        print("Start compiling with lualatex...⏳")
-        compile_out_dir_lualatex = os.path.join(self.output_latex_dir, "build_lualatex")
-        self._compile_with_lualatex(tex_file_to_compile, compile_out_dir_lualatex, engine="lualatex")
-        pdf_files = [os.path.join(compile_out_dir_lualatex, file) for file in os.listdir(compile_out_dir_lualatex) if file.lower().endswith('.pdf')]
-        if pdf_files:
-
-            print(f"✅  Successfully generated PDF file !") 
-            return pdf_files[0]
-        else:
-            print(f"⚠️  Failed to generate PDF with xelatex. Please check the log.")
-            # log_files_xelatex = [os.path.join(compile_out_dir_xelatex, file) for file in os.listdir(compile_out_dir_xelatex) if file.lower().endswith('.log')]
-            log_files_lualatex = [os.path.join(compile_out_dir_lualatex, file) for file in os.listdir(compile_out_dir_lualatex) if file.lower().endswith('.log')]
-            if log_files_lualatex:
-                print(f"📄 Log files for pdflatex: {log_files_lualatex}")
-            return None
+        return self._compile(("lualatex",))
 
     def compile_source(self, pdf_dir):
-        if pdf_dir is None:
-            pdf_dir = self.output_latex_dir
-        os.makedirs(pdf_dir, exist_ok=True)  # Ensure directory exists
+        return self._compile(("pdflatex", "xelatex"), Path(pdf_dir or self.output_latex_dir))
 
-        tex_file_to_compile = find_main_tex_file(self.output_latex_dir)
-        if not tex_file_to_compile:
-            print("⚠️ Warning: No main .tex file found in directory.")
+    def _compile(self, engines, output_dir=None):
+        main_file = find_main_tex_file(self.output_latex_dir)
+        if not main_file:
+            print("No main TeX file found.")
             return None
+        tex_file = Path(main_file).resolve()
+        for engine in engines:
+            if output_dir is None:
+                build_dir = Path(self.output_latex_dir, f"build_{engine}").resolve()
+                try:
+                    build_dir.mkdir()
+                except FileExistsError:
+                    # Source trees may already contain a build of this paper.
+                    build_dir = Path(tempfile.mkdtemp(prefix=f"build_{engine}_", dir=build_dir.parent))
+            else:
+                build_dir = output_dir.resolve()
+                build_dir.mkdir(parents=True, exist_ok=True)
 
-        print("Start compiling with pdflatex...⏳")
-        self._compile_with_pdflatex(
-            tex_file_to_compile,
-            out_dir=pdf_dir,  # Output directly to pdf_dir
-            engine="pdflatex"
-        )
-
-        pdf_files = [
-            f for f in os.listdir(pdf_dir)
-            if f.lower().endswith('.pdf') and not f.startswith('._')  # Skip macOS temp files
-        ]
-
-        if pdf_files:
-            pdf_path = os.path.join(pdf_dir, pdf_files[0])
-            print(f"✅ Successfully generated PDF at: {pdf_path}")
-            return pdf_path
-
-        # Fallback to xelatex if pdflatex failed
-        print("⚠️ pdflatex failed. Retrying with xelatex...⏳")
-        self._compile_with_xelatex(
-            tex_file_to_compile,
-            out_dir=pdf_dir,  # Output directly to pdf_dir
-            engine="xelatex"
-        )
-
-        pdf_files = [
-            f for f in os.listdir(pdf_dir)
-            if f.lower().endswith('.pdf') and not f.startswith('._')
-        ]
-
-        if pdf_files:
-            pdf_path = os.path.join(pdf_dir, pdf_files[0])
-            print(f"✅ Successfully generated PDF at: {pdf_path}")
-            return pdf_path
-
-        # If both compilers failed
-        print("⚠️ Failed to generate PDF with both compilers.")
-        log_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith('.log')]
-        if log_files:
-            print("📄 Compilation logs:")
-            for log in log_files:
-                print(f"  - {os.path.join(pdf_dir, log)}")
-
+            print(f"Compiling with {engine} in {build_dir}...")
+            pdf = self._run_latexmk(engine, tex_file, build_dir)
+            if pdf is not None:
+                Path(self.output_latex_dir, "success.txt").write_text("Compilation successful\n", encoding="utf-8")
+                return str(pdf)
         return None
 
-    def _compile_with_pdflatex(self,
-                              tex_file: str, 
-                              out_dir: str, 
-                              engine: str = "pdflatex"):
-        
-        os.makedirs(out_dir, exist_ok=True)
-        
-        cmd = [
-            "latexmk",
-            f"-{engine}",                
-            "-interaction=nonstopmode",   # no stop on errors
-            f"-outdir={out_dir}",  
-            f"-file-line-error",       
-            f"-synctex=1",
-            f"-f",                        # force mode
-            tex_file
-        ]
-        cwd = os.path.dirname(tex_file)
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, cwd=cwd)
-            print("✅  Compilation successful!") #compile success!
-
-            output_path = os.path.join(self.output_latex_dir, "success.txt")
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write("Compilation successful\n")
-                
-        except subprocess.CalledProcessError as e:
-            print("⚠️  Somthing went wrong during compiling with pdflatex.")
-
-    def _compile_with_xelatex(self,
-                              tex_file: str, 
-                              out_dir: str, 
-                              engine: str = "xelatex"):
-        
-        os.makedirs(out_dir, exist_ok=True)
-        
-        cmd = [
-            "latexmk",
-            f"-{engine}",                
-            "-interaction=nonstopmode",   # no stop on errors
-            f"-outdir={out_dir}",  
-            f"-file-line-error",       
-            f"-synctex=1",
-            f"-f",                        # force mode
-            tex_file
-        ]
-        cwd = os.path.dirname(tex_file)
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, cwd=cwd)
-            print("✅  Compilation successful!") #compile success!
-        except subprocess.CalledProcessError as e:
-            print("⚠️  Somthing went wrong during compiling with xelatex.")
-
-
-    def _compile_with_lualatex(self,
-                              tex_file: str, 
-                              out_dir: str, 
-                              engine: str = "lualatex"):
-        
-        os.makedirs(out_dir, exist_ok=True)
-        
-        cmd = [
-            "latexmk",
-            f"-{engine}",                
-            "-interaction=nonstopmode",   # no stop on errors
-            f"-outdir={out_dir}",  
-            f"-file-line-error",       
-            f"-synctex=1",
-            f"-f",                        # force mode
-            tex_file
-        ]
-        cwd = os.path.dirname(tex_file)
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, cwd=cwd)
-            print("✅  Compilation successful!") #compile success!
-
-            output_path = os.path.join(self.output_latex_dir, "success.txt")
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write("Compilation successful\n")
-                
-        except subprocess.CalledProcessError as e:
-            print(f"⚠️  Somthing went wrong during compiling with lualatex. \n {e}")
+    @staticmethod
+    def _run_latexmk(engine, tex_file, build_dir):
+        # The dependency report names the final PDF, including for XeLaTeX's XDV workflow.
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            report = Path(tmp_dir, "targets.mk")
+            cmd = [
+                "latexmk", f"-{engine}", "-interaction=nonstopmode", "-file-line-error",
+                "-synctex=1", "-f", "-g", f"-outdir={build_dir}", "-deps-escape=none",
+                f"-deps-out={report}", str(tex_file),
+            ]
+            result = subprocess.run(cmd, cwd=tex_file.parent, capture_output=True)
+            if result.returncode:
+                print(f"{engine} failed (latexmk exit {result.returncode}). See {build_dir} for logs.")
+                return None
+            if report.is_file():
+                for line in report.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("#===End dependents"):
+                        break
+                    target = re.match(r"^([^#\s].*?\.pdf)\s*:", line, re.IGNORECASE)
+                    if target:
+                        pdf = (tex_file.parent / target[1]).resolve()
+                        if pdf.is_relative_to(build_dir) and pdf.is_file() and pdf.stat().st_size:
+                            return pdf
+            print(f"{engine} did not report a nonempty output PDF in {build_dir}.")
+            return None
