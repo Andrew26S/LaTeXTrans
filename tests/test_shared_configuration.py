@@ -114,7 +114,7 @@ class SharedConfigurationTests(unittest.TestCase):
                 with self.subTest(setting=setting):
                     path.write_text(f"update_term = {setting}\n")
                     agent = TranslatorAgent(config=load_runtime_config(str(path)), trans_mode=2)
-                    agent._request_llm_for_trans = AsyncMock(return_value="译文")
+                    agent._request_llm_for_trans = AsyncMock(return_value=("译文", True))
                     agent._request_llm_for_extract_terms = AsyncMock(return_value='"term" - "术语"')
                     asyncio.run(agent._translate_section({"section": "1", "content": "term"}, None))
                     self.assertIs(agent.update_term, expected)

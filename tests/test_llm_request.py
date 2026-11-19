@@ -151,14 +151,38 @@ class RequestFallbackTests(unittest.TestCase):
         agent = make_agent()
         session = FakeSession(FakeResponse(status=400, raw="bad request"))
         result = run(agent._request_llm_for_trans("sys", "Hello.", "<PLACEHOLDER_CAP_1>", "cap", session))
-        self.assertEqual(result, "Hello.")
+        self.assertEqual(result, ("Hello.", False))
         self.assertEqual(agent.fail_caption_phs, ["<PLACEHOLDER_CAP_1>"])
 
     def test_translate_success_is_sanitized(self):
         agent = make_agent()
         session = FakeSession(FakeResponse(body=ok_body("```latex\n你好。\n\\end{document}\n```")))
         result = run(agent._request_llm_for_trans("sys", "Hello.", "1", "sec", session))
-        self.assertEqual(result, "你好。")
+        self.assertEqual(result, ("你好。", True))
+
+    def test_failed_parts_only_extract_terms_after_successful_retry(self):
+        for kind, fields in (
+            ("section", {"section": "1"}), ("caption", {"placeholder": "caption"}),
+            ("env", {"placeholder": "env", "need_trans": True}),
+        ):
+            with self.subTest(kind=kind):
+                agent = make_agent()
+                agent.trans_mode = 2
+                agent.update_term = True
+                initial_terms = {"GPU": "GPU"} if kind == "env" else {}
+                agent.term_dict = dict(initial_terms)
+                translate = getattr(agent, f"_translate_{kind}")
+                part = {"content": "GPU", **fields}
+                session = FakeSession(FakeResponse(status=400, raw="failed"))
+                self.assertEqual(run(translate(part, session))["trans_content"], "GPU")
+                self.assertTrue(agent.have_fail_parts)
+                self.assertEqual(len(session.payloads), 1)
+                self.assertEqual(agent.term_dict, initial_terms)
+                # An unchanged translation can still be a successful translation.
+                session = FakeSession(FakeResponse(body=ok_body("GPU")), FakeResponse(body=ok_body('"GPU" - "GPU"')))
+                self.assertEqual(run(translate(part, session))["trans_content"], "GPU")
+                self.assertEqual(len(session.payloads), 2)
+                self.assertEqual(agent.term_dict["GPU"], "GPU")
 
     def test_extract_terms_failure_returns_na(self):
         agent = make_agent()

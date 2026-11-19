@@ -338,180 +338,53 @@ class TranslatorAgent(BaseToolAgent):
             report_progress(100, "Retranslation finished.")
 
     async def _translate_section(self, section: Dict[str, Any], session: aiohttp.ClientSession, error_message=None) -> Dict[str, Any]:
-        
-        transed_section = section.copy()
-        section_num = section["section"]
-        if self.trans_mode == 0:
-            
-            transed_section["trans_content"] = await self._request_llm_for_trans(
-                pm.section_system_prompt,
-                section["content"],
-                fail_part=section_num,
-                type="sec",
-                session=session
-            )
-        elif self.trans_mode == 1:
-            transed_section["trans_content"] = await self._request_llm_for_retrans_error_parts(
-            pm.retrans_error_parts_system_prompt,
-            part=transed_section,
-            error_message=error_message,
-            fail_part=section_num,
-            type="sec",
-            session=session)
-
-        elif self.trans_mode == 2:
-            """
-            Combined with terminology translation
-            """
-            if not self.term_dict:
-                transed_section["trans_content"] = await self._request_llm_for_trans(
-                    pm.section_system_prompt,
-                    section["content"],
-                    fail_part=section_num,
-                    type="sec",
-                    session=session
-                )
-            else:
-                transed_section["trans_content"] = await self._request_llm_for_trans_with_terms(
-                                                            pm.section_system_prompt_with_dict,
-                                                            section["content"], 
-                                                            fail_part=section_num,
-                                                            type="sec",
-                                                            session=session
-                                                            )
-                
-            try:
-                if self.update_term:
-                    src_text = self._extract_text_from_tex(transed_section["content"])
-                    tgt_text = self._extract_text_from_tex(transed_section["trans_content"])
-                    term_text = await self._request_llm_for_extract_terms(pm.extract_terminology_system_prompt,
-                                                            src_text,
-                                                            tgt_text,
-                                                            session=session
-                                                            )
-
-                    # self._updated_term_dict(term_text)
-                    self._updated_term_dict_v2(term_text)
-            except Exception as e:
-                return transed_section
-
-        return transed_section
+        return await self._translate_part(
+            section, section["section"], "sec", pm.section_system_prompt,
+            pm.section_system_prompt_with_dict, session, error_message,
+        )
 
     async def _translate_caption(self, caption: Dict[str, Any], session: aiohttp.ClientSession, error_message=None) -> Dict[str, Any]:
-        """
-        Translates the captions of the input data.
-        """
-        transed_caption = caption.copy()
-        placeholder = caption["placeholder"]
-        if self.trans_mode == 0:
-            transed_caption["trans_content"] = await self._request_llm_for_trans(pm.caption_system_prompt,
-                                                        caption["content"],
-                                                        fail_part=placeholder,
-                                                        type="cap",
-                                                        session=session
-                                                        )
-        elif self.trans_mode == 1:
-            # Keep current retranslating path for captions.
-            transed_caption["trans_content"] = await self._request_llm_for_retrans_error_parts(pm.retrans_error_parts_system_prompt,
-                                                                                         part=transed_caption,
-                                                                                         error_message=error_message,
-                                                                                         fail_part=placeholder,
-                                                                                         type="cap",
-                                                                                         session=session)
-            
-        elif self.trans_mode == 2:
-            if not self.term_dict:
-                transed_caption["trans_content"] = await self._request_llm_for_trans(pm.caption_system_prompt,
-                                                        caption["content"], 
-                                                        fail_part=placeholder,
-                                                        type="cap",
-                                                        session=session
-                                                        )
-            else:
-                transed_caption["trans_content"] = await self._request_llm_for_trans_with_terms(pm.caption_system_prompt_with_dict,
-                                                                                          caption["content"],
-                                                                                          fail_part=placeholder,
-                                                                                          type="cap",
-                                                                                          session=session)
-            try:
-                if self.update_term:
-                    src_text = self._extract_text_from_tex(transed_caption["content"])
-                    tgt_text = self._extract_text_from_tex(transed_caption["trans_content"])
-                    term_text = await self._request_llm_for_extract_terms(pm.extract_terminology_system_prompt,
-                                                            src_text,
-                                                            tgt_text,
-                                                            session=session
-                                                            )
-
-                    # self._updated_term_dict(term_text)
-                    self._updated_term_dict_v2(term_text)
-            except Exception as e:
-                return transed_caption
-
-        return transed_caption
+        return await self._translate_part(
+            caption, caption["placeholder"], "cap", pm.caption_system_prompt,
+            pm.caption_system_prompt_with_dict, session, error_message,
+        )
 
     async def _translate_env(self, env: Dict[str, Any], session: aiohttp.ClientSession, error_message=None) -> Dict[str, Any]:
-        """
-        Translates an environment block (env) based on whether translation is needed.
-        """
-        transed_env = env.copy()
-        placeholder = env["placeholder"]
-        if self.trans_mode == 0: # sum
-            if env["need_trans"]:
-                transed_env["trans_content"] = await self._request_llm_for_trans(pm.env_system_prompt,
-                                                            env["content"], 
-                                                            fail_part=placeholder,
-                                                            type="env",
-                                                            session=session
-                                                            )                
-            else:
-                transed_env["trans_content"] = env["content"]
-        elif self.trans_mode == 1:
-                transed_env["trans_content"] = await self._request_llm_for_retrans_error_parts(pm.retrans_error_parts_system_prompt,
-                                                                                         part=transed_env,
-                                                                                         error_message=error_message,
-                                                                                         fail_part=placeholder,
-                                                                                         type="env",
-                                                                                         session = session)
-        elif self.trans_mode == 2: # dict or sum+dict
-            if not self.term_dict:
-                if env["need_trans"]:
-                    transed_env["trans_content"] = await self._request_llm_for_trans(pm.env_system_prompt,
-                                                            env["content"], 
-                                                            fail_part=placeholder,
-                                                            type="env",
-                                                            session=session
-                                                            )
-                else:
-                    transed_env["trans_content"] = env["content"]
-            else:
-                if env["need_trans"]:
-                    transed_env["trans_content"] = await self._request_llm_for_trans_with_terms(pm.env_system_prompt_with_dict,
-                                                                                            env["content"],
-                                                                                            fail_part=placeholder,
-                                                                                            type="env",
-                                                                                            session=session)
-                else:
-                    transed_env["trans_content"] = env["content"]
+        if self.trans_mode != 1 and not env["need_trans"]:
+            return {**env, "trans_content": env["content"]}
+        return await self._translate_part(
+            env, env["placeholder"], "env", pm.env_system_prompt,
+            pm.env_system_prompt_with_dict, session, error_message,
+        )
 
-            if env["need_trans"]:
-                try:
-                    if self.update_term:
-                        src_text = self._extract_text_from_tex(transed_env["content"])
-                        tgt_text = self._extract_text_from_tex(transed_env["trans_content"])
-                        text = await self._request_llm_for_extract_terms(pm.extract_terminology_system_prompt,
-                                                                src_text,
-                                                                tgt_text,
-                                                                session=session
-                                                                )
+    async def _translate_part(
+        self, part: Dict[str, Any], identifier: str, kind: str, prompt: str,
+        glossary_prompt: str, session: aiohttp.ClientSession, error_message: Optional[str],
+    ) -> Dict[str, Any]:
+        if self.trans_mode == 1:
+            translated = await self._request_llm_for_retrans_error_parts(
+                pm.retrans_error_parts_system_prompt, part, error_message, identifier, kind, session,
+            )
+            return {**part, "trans_content": translated}
 
-                            # self._updated_term_dict(term_text)
-                        self._updated_term_dict_v2(text)
-                except Exception as e:
-                    return transed_env
+        source = part["content"]
+        if self.trans_mode == 2 and self.term_dict:
+            translated, success = await self._request_llm_for_trans_with_terms(
+                glossary_prompt, source, identifier, kind, session,
+            )
+        else:
+            translated, success = await self._request_llm_for_trans(prompt, source, identifier, kind, session)
 
-
-        return transed_env
+        if success and self.trans_mode == 2 and self.update_term:
+            try:
+                terms = await self._request_llm_for_extract_terms(
+                    pm.extract_terminology_system_prompt, self._extract_text_from_tex(source),
+                    self._extract_text_from_tex(translated), session,
+                )
+                self._updated_term_dict_v2(terms)
+            except Exception as exc:
+                log_message(f"Could not update terminology for {identifier}: {exc}")
+        return {**part, "trans_content": translated}
 
     def _build_payload(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
         payload = {
@@ -609,22 +482,22 @@ class TranslatorAgent(BaseToolAgent):
                                      text: str,
                                      fail_part: str,
                                      type: str,
-                                     session: aiohttp.ClientSession) -> str:
+                                     session: aiohttp.ClientSession) -> tuple[str, bool]:
         payload = self._translation_payload(system_prompt, text, fail_part)
         try:
             content = await self._post_chat(payload, session)
         except LLMRequestError as e:
             self._mark_fail_part(fail_part, type)
             log_message(f"Failed to translate text, return original text: {fail_part}. {e}")
-            return text
-        return sanitize_llm_translation(text, content)
+            return text, False
+        return sanitize_llm_translation(text, content), True
 
     async def _request_llm_for_trans_with_terms(self,
                                           system_prompt: str,
                                           text: str,
                                           fail_part: str,
                                           type: str,
-                                          session: aiohttp.ClientSession) -> str:
+                                          session: aiohttp.ClientSession) -> tuple[str, bool]:
         system_prompt = f"{system_prompt}\nWhen translating, you must strictly use the following glossary for substitution. This is the highest priority rule to ensure the consistency of terms throughout the text.\n<Glossary>:\n{self.term_dict}\nNow, please translate the following new paragraph. Maintain the terminology from the glossary provided."
         payload = self._translation_payload(system_prompt, f"[Current LaTeX Paragraph]:\n{text}", fail_part)
         try:
@@ -632,8 +505,8 @@ class TranslatorAgent(BaseToolAgent):
         except LLMRequestError as e:
             self._mark_fail_part(fail_part, type)
             log_message(f"Failed to translate text, return original text: {fail_part}. {e}")
-            return text
-        return sanitize_llm_translation(text, content)
+            return text, False
+        return sanitize_llm_translation(text, content), True
 
     async def _request_llm_for_retrans_error_parts(self,
                                                    system_prompt: str,
