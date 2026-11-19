@@ -1,6 +1,8 @@
 import asyncio
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import aiohttp
@@ -56,6 +58,29 @@ def make_agent(**llm_overrides):
 
 def run(coro):
     return asyncio.run(coro)
+
+
+class TranslationSessionTests(unittest.TestCase):
+    def test_model_requests_use_environment_proxy_settings_in_each_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("captions", "envs", "inputs", "newcommands"):
+                (root / f"{name}_map.json").write_text("[]")
+            for mode in (0, 1, 2):
+                with self.subTest(mode=mode):
+                    (root / "sections_map.json").write_text(json.dumps([
+                        {"section": "1", "content": "Hello.", "trans_content": "Old translation"},
+                    ]))
+                    agent = TranslatorAgent(
+                        config={"source_language": "en", "target_language": "ch", "llm_config": {}},
+                        trans_mode=mode, project_dir=directory, output_dir=directory,
+                        errors_report=[{"part": "sec", "num_or_ph": "1"}],
+                    )
+                    with mock.patch.object(agent, "_post_chat", new_callable=mock.AsyncMock, return_value="译文") as post:
+                        run(agent.execute())
+                    post.assert_awaited_once()
+                    session = post.await_args.args[1]
+                    self.assertTrue(session.trust_env)
 
 
 class PostChatTests(unittest.TestCase):
