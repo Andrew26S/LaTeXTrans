@@ -1,6 +1,4 @@
-import gzip
 import os
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -142,32 +140,42 @@ class ProjectResultTests(unittest.TestCase):
             self.assertIn("missing latexmk", Path(attempt["log_path"]).read_text())
             self.assertFalse(marker.exists())
 
-    @unittest.skipUnless(shutil.which("latexmk") and shutil.which("pdflatex"), "requires TeX Live")
-    def test_standalone_root_relative_includes_and_agent_source_maps(self):
+    def test_standalone_and_agent_publish_reported_pdf_and_map_from_their_working_dirs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             src = root / "src"
             src.mkdir()
-            (src / "body.tex").write_text("Hello")
             main = src / "main.tex"
-            document = r"\documentclass{article}\begin{document}\input{%s}\end{document}"
-            main.write_text(document % "src/body")
-            (root / ".latexmkrc").write_text("$jobname = 'article';\n")
-            cwd = Path.cwd()
-            try:
-                os.chdir(root)
-                compile_with_latexmk("src/main.tex", "out")
-            finally:
-                os.chdir(cwd)
-            self.assertTrue((root / "out/article.pdf").is_file())
-            self.assertIn(b"src/body.tex", gzip.decompress((root / "out/article.synctex.gz").read_bytes()))
+            main.write_text(r"\documentclass{article}")
+            output = root / "out"
 
-            # The agent resolves includes from the main file's directory.
-            main.write_text(document % "body")
-            compiler = LaTexCompiler(str(src))
-            pdf = compiler.compile_source(root / "out")
-            self.assertEqual(pdf, str(root / "out/main.pdf"))
-            self.assertIn(b"body.tex", gzip.decompress(Path(pdf).with_suffix(".synctex.gz").read_bytes()))
+            def build(cmd, cwd, **kwargs):
+                self.assertEqual(cmd[:2], ["latexmk", "-pdflatex"])
+                self.assertIn("-synctex=1", cmd)
+                self.assertEqual(Path(cmd[-1]), main)
+                build_dir = Path(next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("-outdir=")))
+                pdf = build_dir / "custom job.pdf"
+                pdf.write_bytes(b"paper")
+                pdf.with_suffix(".synctex.gz").write_bytes(b"source map")
+                report = Path(next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("-deps-out=")))
+                report.write_text(f"{os.path.relpath(pdf, cwd)} : main.tex")
+                return CompletedProcess(cmd, 0)
+
+            with patch("src.formats.latex.compile.subprocess.run", side_effect=build) as latexmk:
+                previous = Path.cwd()
+                try:
+                    os.chdir(root)
+                    compile_with_latexmk("src/main.tex", "out")
+                finally:
+                    os.chdir(previous)
+                self.assertEqual(latexmk.call_args.kwargs["cwd"], root)
+                self.assertEqual((output / "custom job.pdf").read_bytes(), b"paper")
+                self.assertEqual((output / "custom job.synctex.gz").read_bytes(), b"source map")
+                agent_output = root / "agent"
+                pdf = LaTexCompiler(str(src)).compile_source(agent_output)
+                self.assertEqual(latexmk.call_args.kwargs["cwd"], src)
+                self.assertEqual(pdf, str(agent_output / "custom job.pdf"))
+                self.assertEqual(Path(pdf).with_suffix(".synctex.gz").read_bytes(), b"source map")
 
     def test_publishing_without_synctex_removes_previous_map(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -23,6 +23,8 @@ Use four spaces per indentation level, `snake_case` for modules and functions, `
 
 Run `python -m unittest discover -s tests` for the full suite. Append `-p 'test_cli.py'` to focus on CLI behavior. Name files `test_<feature>.py` and methods `test_<behavior>`. Use temporary directories for project files and mock external calls in unit tests. There is no configured coverage threshold.
 
+Run the optional TeX smoke test with `python -m unittest discover -s tests/integration` when latexmk and pdfLaTeX are installed.
+
 ## Commits and Pull Requests
 
 Use a short imperative commit subject with a type and optional scope, following recent history (for example, `fix(compiler): preserve run artifacts`). In a pull request, describe the behavior change, link any related issue, and list the tests you ran. Include a screenshot or sample PDF when the change affects the GUI or rendered output.
