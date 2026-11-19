@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, patch
 from src.agents import coordinator_agent
 from src.formats.latex.compile import LaTexCompiler
 from src.formats.latex.utils import compile_with_latexmk
-from src.gui.streamlit_app import _collect_result_pdfs
 from src.runtime import run_projects
 
 
@@ -51,7 +50,7 @@ class ProjectResultTests(unittest.TestCase):
                 "project_start", "project_complete",
             ])
             self.assertEqual(events[-1]["pdf_path"], str(final_pdf))
-            self.assertEqual(_collect_result_pdfs(result), [str(final_pdf)])
+            self.assertEqual(result["pdfs"], [str(final_pdf)])
 
     def test_compiler_ignores_pdfs_from_previous_builds_and_unrelated_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -228,7 +227,7 @@ class ProjectResultTests(unittest.TestCase):
                 self.assertTrue(Path(attempt["pdf_path"]).read_bytes().endswith(b"broken"))
                 self.assertTrue(Path(attempt["log_path"]).read_bytes().endswith(b"broken"))
             for result, marker in ((first, b"good"), (retry, b"fixed")):
-                translated, original = _collect_result_pdfs(result)
+                translated, original = result["pdfs"]
                 self.assertTrue(Path(translated).read_bytes().endswith(marker))
                 self.assertEqual(Path(original).read_bytes(), b"good" if result is first else b"broken")
 
@@ -248,11 +247,11 @@ class ProjectResultTests(unittest.TestCase):
 import streamlit as st
 from src.gui.streamlit_app import _ensure_session_state, _render_result_files
 _ensure_session_state()
-_render_result_files(st.session_state.result, {}, {"paper_list": [], "project_items": []})
+_render_result_files(st.session_state.result, {"project_items": [], "overrides": {}})
 """)
             app.session_state.current_run_logs = []
             app.session_state.result = {
-                "projects": ["ok", "partial"], "output_dir": directory,
+                "projects": ["ok", "partial"], "output_dir": directory, "pdfs": [str(success)], "config": {},
                 "completed_projects": [{"project_name": "ok", "pdf_path": str(success)}],
                 "failed_projects": [{"index": 2, "project_name": "partial", "project_dir": "partial",
                                      "error": "failed", "compile_attempts": attempts}],

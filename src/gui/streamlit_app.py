@@ -3,26 +3,10 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import streamlit as streamlit_backend
-import toml
 
-from src.runtime import DEFAULT_LOCAL_CONFIG_PATH, run_translation, split_multivalue_text
+from src.configuration import DEFAULT_LOCAL_CONFIG_PATH, load_runtime_config
+from src.runtime import build_retry_request, run_translation, split_multivalue_text
 from src.utils.progress import use_reporter
-
-
-def _collect_result_pdfs(result: Dict[str, Any]) -> List[str]:
-    selected: List[str] = []
-
-    for project in result["completed_projects"]:
-        translated_pdf = Path(project["pdf_path"])
-        project_name = project["project_name"]
-        original_pdf = translated_pdf.parent / project_name / f"{project_name}.pdf"
-
-        if translated_pdf.exists():
-            selected.append(str(translated_pdf))
-        if original_pdf.exists():
-            selected.append(str(original_pdf))
-
-    return selected
 
 
 class StreamlitReporter:
@@ -41,17 +25,21 @@ class StreamlitReporter:
         self.stage_text.text(message)
 
 
-def _load_defaults(config_path: str) -> Dict[str, Any]:
-    try:
-        return toml.load(config_path)
-    except Exception:
-        return {}
-
-
 def _ensure_session_state() -> None:
     streamlit_backend.session_state.setdefault("job_history", [])
-    streamlit_backend.session_state.setdefault("retry_failed_only", False)
     streamlit_backend.session_state.setdefault("retry_payload", None)
+    # Streamlit keeps existing session entries across application reloads.
+    for item in streamlit_backend.session_state.job_history:
+        if "request" not in item:
+            params = dict(item["params"])
+            inputs = item["inputs"]
+            item["request"] = {
+                "config_path": params.pop("config_path"),
+                "all_existing": params.pop("all_existing", False),
+                "project_items": inputs["project_items"],
+                "overrides": params,
+            }
+            item["inputs"] = inputs["paper_list"] + inputs["project_items"]
 
 
 def _inject_style() -> None:
@@ -99,45 +87,43 @@ def _inject_style() -> None:
     )
 
 
-def _sidebar_form(defaults: Dict[str, Any]) -> Dict[str, Any]:
-    llm_defaults = defaults.get("llm_config", {})
-    streamlit_backend.sidebar.header("Run Configuration")
-    config_path = streamlit_backend.sidebar.text_input("Config Path", DEFAULT_LOCAL_CONFIG_PATH)
-    source_language = streamlit_backend.sidebar.text_input("Source Language", defaults.get("source_language", "en"))
-    target_language = streamlit_backend.sidebar.text_input("Target Language", defaults.get("target_language", "ch"))
-    model = streamlit_backend.sidebar.text_input("Model", llm_defaults.get("model", ""))
-    base_url = streamlit_backend.sidebar.text_input("Base URL", llm_defaults.get("base_url", ""))
-    api_key = streamlit_backend.sidebar.text_input("API Key", llm_defaults.get("api_key", ""), type="password")
-    tex_source_dir = streamlit_backend.sidebar.text_input("TeX Source Dir", defaults.get("tex_sources_dir", "tex source"))
-    output_dir = streamlit_backend.sidebar.text_input("Output Dir", defaults.get("output_dir", "outputs"))
-    mode_options = {"0 - Normal": 0, "1 - Retry Errors": 1, "2 - Alt": 2}
-    selected_mode = streamlit_backend.sidebar.selectbox("Mode", list(mode_options.keys()), index=0)
-    update_term = streamlit_backend.sidebar.checkbox(
-        "Update Terms",
-        value=str(defaults.get("update_term", "False")) == "True",
-    )
-    all_existing = streamlit_backend.sidebar.checkbox("Process All Existing Projects", value=False)
-    user_term = streamlit_backend.sidebar.text_area(
-        "User Terms",
-        defaults.get("user_term", ""),
-        height=120,
-        help="Optional terminology guidance passed through the existing config field.",
-    )
+def _sidebar_form():
+    sidebar = streamlit_backend.sidebar
+    sidebar.header("Run Configuration")
+    path = sidebar.text_input("Config Path", DEFAULT_LOCAL_CONFIG_PATH).strip()
+    try:
+        config = load_runtime_config(path)
+    except (OSError, ValueError) as exc:
+        sidebar.error(f"Could not load configuration: {exc}")
+        return None
 
-    return {
-        "config_path": config_path,
-        "source_language": source_language.strip() or "en",
-        "target_language": target_language.strip() or "ch",
-        "model": model.strip(),
-        "url": base_url.strip(),
-        "key": api_key.strip(),
-        "source": tex_source_dir.strip(),
-        "output": output_dir.strip(),
-        "mode": mode_options[selected_mode],
-        "update_term": "True" if update_term else "False",
-        "all_existing": all_existing,
-        "user_term": user_term.strip(),
-    }
+    overrides = {}
+
+    def text_option(label, key, default, **widget_options):
+        value = sidebar.text_input(label, value=default, key=f"{path}:{key}", **widget_options)
+        if value != default:
+            overrides[key] = value.strip()
+
+    llm = config["llm_config"]
+    text_option("Source Language", "source_language", config["source_language"])
+    text_option("Target Language", "target_language", config["target_language"])
+    text_option("Model", "model", llm.get("model", "gpt-4o"))
+    text_option("Base URL", "url", llm.get("base_url", ""))
+    text_option("API Key", "key", llm.get("api_key", ""), type="password")
+    text_option("TeX Source Dir", "source", config.get("tex_sources_dir", "tex source"))
+    text_option("Output Dir", "output", config.get("output_dir", "outputs"))
+
+    modes = ["0 - Normal", "1 - Retry Errors", "2 - Alt"]
+    mode = sidebar.selectbox("Mode", range(len(modes)), index=config.get("mode", 0),
+                             format_func=modes.__getitem__, key=f"{path}:mode")
+    if mode != config.get("mode", 0):
+        overrides["mode"] = mode
+    update_term = sidebar.checkbox("Update Terms", value=config["update_term"], key=f"{path}:update_term")
+    if update_term != config["update_term"]:
+        overrides["update_term"] = update_term
+    text_option("User Terms", "user_term", config.get("user_term", ""), help="Path to a terminology CSV file.")
+    all_existing = sidebar.checkbox("Process All Existing Projects", value=False)
+    return {"config_path": path, "overrides": overrides, "all_existing": all_existing}
 
 
 def _collect_inputs() -> Dict[str, List[str]]:
@@ -165,42 +151,24 @@ def _collect_inputs() -> Dict[str, List[str]]:
     }
 
 
-def _append_history(result: Dict[str, Any], params: Dict[str, Any], inputs: Dict[str, List[str]], logs: List[str]) -> None:
-    pdfs = _collect_result_pdfs(result)
-    output_dir = Path(result["output_dir"])
+def _append_history(result, request, logs):
     history_item = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "params": dict(params),
-        "inputs": {
-            "paper_list": list(inputs["paper_list"]),
-            "project_items": list(inputs["project_items"]),
-        },
-        "output_dir": str(output_dir),
-        "projects": list(result["projects"]),
-        "completed_projects": list(result["completed_projects"]),
-        "failed_projects": list(result["failed_projects"]),
-        "pdfs": pdfs,
+        "request": request,
+        "inputs": list(result["config"].get("paper_list", [])) + request["project_items"],
+        "output_dir": result["output_dir"],
+        "completed_projects": result["completed_projects"],
+        "failed_projects": result["failed_projects"],
+        "pdfs": result["pdfs"],
         "logs": list(logs[-80:]),
     }
     streamlit_backend.session_state.job_history.insert(0, history_item)
     streamlit_backend.session_state.job_history = streamlit_backend.session_state.job_history[:12]
 
 
-def _retry_inputs(failures: List[Dict[str, Any]]) -> Dict[str, Any]:
-    inputs = {
-        "paper_list": [item["arxiv_id"] for item in failures if "arxiv_id" in item],
-        "project_items": [item["project_dir"] for item in failures if "project_dir" in item and "arxiv_id" not in item],
-    }
-    categories = {item["arxiv_id"]: item["categories"] for item in failures if "categories" in item}
-    if categories:
-        inputs["category"] = categories
-    return inputs
-
-
-def _queue_retry(params, inputs, title):
-    streamlit_backend.session_state.retry_payload = {
-        "params": dict(params), "inputs": inputs, "title": title,
-    }
+def _queue_retry(request, failures, title):
+    retry = build_retry_request(failures, config_path=request["config_path"], overrides=request["overrides"])
+    streamlit_backend.session_state.retry_payload = {"request": retry, "title": title}
 
 
 def _show_compile_attempts(projects, *, downloads=False):
@@ -224,11 +192,11 @@ def _show_compile_attempts(projects, *, downloads=False):
                         streamlit_backend.warning(f"Could not read {pdf}")
 
 
-def _render_result_files(result: Dict[str, Any], params: Dict[str, Any], inputs: Dict[str, List[str]]) -> None:
+def _render_result_files(result, request) -> None:
     output_dir = Path(result["output_dir"])
     completed = result["completed_projects"]
     failed = result["failed_projects"]
-    pdfs = [Path(path) for path in _collect_result_pdfs(result)]
+    pdfs = [Path(path) for path in result["pdfs"]]
 
     streamlit_backend.subheader("Results")
     stat_a, stat_b, stat_c = streamlit_backend.columns(3)
@@ -269,10 +237,10 @@ def _render_result_files(result: Dict[str, Any], params: Dict[str, Any], inputs:
             streamlit_backend.text(f"{project['project_name']}: {project['error']}")
         streamlit_backend.button(
             "Retry Failed Projects", use_container_width=True, on_click=_queue_retry,
-            args=(params, _retry_inputs(failed), f"Retry {len(failed)} failed project(s)"),
+            args=(request, failed, f"Retry {len(failed)} failed project(s)"),
         )
 
-    _append_history(result=result, params=params, inputs=inputs, logs=streamlit_backend.session_state.current_run_logs)
+    _append_history(result, request, streamlit_backend.session_state.current_run_logs)
 
 
 def _render_history() -> None:
@@ -290,10 +258,7 @@ def _render_history() -> None:
         )
         with streamlit_backend.expander(label, expanded=index == 0):
             streamlit_backend.write("Inputs")
-            if item["inputs"]["paper_list"]:
-                streamlit_backend.code("\n".join(item["inputs"]["paper_list"]), language="text")
-            if item["inputs"]["project_items"]:
-                streamlit_backend.code("\n".join(item["inputs"]["project_items"]), language="text")
+            streamlit_backend.code("\n".join(item["inputs"]), language="text")
 
             streamlit_backend.write("Output Directory")
             streamlit_backend.code(item["output_dir"], language="text")
@@ -305,20 +270,19 @@ def _render_history() -> None:
 
             _show_compile_attempts(item["completed_projects"] + item["failed_projects"])
             if item["failed_projects"]:
-                retry_inputs = _retry_inputs(item["failed_projects"])
                 streamlit_backend.write("Failed Projects")
-                streamlit_backend.code("\n".join(retry_inputs["project_items"] + retry_inputs["paper_list"]), language="text")
+                streamlit_backend.code("\n".join(p["project_name"] for p in item["failed_projects"]), language="text")
                 streamlit_backend.button(
                     "Retry Failed Projects from This Run",
                     key=f"retry_history_{index}", use_container_width=True, on_click=_queue_retry,
-                    args=(item["params"], retry_inputs, f"Retry failed projects from {item['timestamp']}"),
+                    args=(item["request"], item["failed_projects"], f"Retry failed projects from {item['timestamp']}"),
                 )
 
             streamlit_backend.write("Recent Logs")
             streamlit_backend.code("\n".join(item["logs"]), language="text")
 
 
-def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, Any], title: str, retry: bool = False) -> None:
+def _run_streamlit_job(request: Dict[str, Any], title: str) -> None:
     streamlit_backend.subheader(title)
     status_col, stats_col = streamlit_backend.columns([1.6, 1], gap="large")
     with status_col:
@@ -348,31 +312,9 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, Any], title: st
             if event["type"] == "project_error":
                 stage_text.text(f"Error in {event['project_name']}: {event['error']}")
 
-    overrides = {
-        "paper_list": inputs["paper_list"],
-        "replace_paper_list": retry,
-        "category": inputs.get("category"),
-        "model": params["model"],
-        "url": params["url"],
-        "key": params["key"],
-        "source": params["source"],
-        "output": params["output"],
-        "source_language": params["source_language"],
-        "target_language": params["target_language"],
-        "mode": params["mode"],
-        "user_term": params["user_term"],
-        "update_term": params["update_term"],
-    }
-
     try:
         with use_reporter(reporter):
-            result = run_translation(
-                config_path=params["config_path"],
-                overrides=overrides,
-                project_items=inputs["project_items"],
-                all_existing=params["all_existing"] and not retry,
-                event_callback=on_event,
-            )
+            result = run_translation(**request, event_callback=on_event)
     except Exception as exc:
         reporter.log(f"Run failed: {exc}")
         stage_text.markdown(f"**Stage** Failed: {exc}")
@@ -390,7 +332,7 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, Any], title: st
         results_placeholder.warning(summary)
     else:
         results_placeholder.error(summary)
-    _render_result_files(result=result, params=params, inputs=inputs)
+    _render_result_files(result, request)
 
 
 def main() -> None:
@@ -408,8 +350,7 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    defaults = _load_defaults(DEFAULT_LOCAL_CONFIG_PATH)
-    params = _sidebar_form(defaults)
+    request = _sidebar_form()
     inputs = _collect_inputs()
 
     streamlit_backend.caption(
@@ -418,25 +359,11 @@ def main() -> None:
 
     retry_payload = streamlit_backend.session_state.pop("retry_payload", None)
     if retry_payload:
-        _run_streamlit_job(
-            params=retry_payload["params"],
-            inputs=retry_payload["inputs"],
-            title=retry_payload["title"],
-            retry=True,
-        )
-        _render_history()
-        return
-
-    run_clicked = streamlit_backend.button("Start Translation", type="primary", use_container_width=True)
-    if run_clicked:
-        if not (inputs["paper_list"] or inputs["project_items"] or params["all_existing"]):
-            streamlit_backend.error("No input provided. Add arXiv IDs, local projects, or enable all-existing mode.")
-        else:
-            config_candidate = Path(params["config_path"])
-            if not config_candidate.exists():
-                streamlit_backend.error(f"Config file not found: {params['config_path']}")
-            else:
-                _run_streamlit_job(params=params, inputs=inputs, title="Current Run")
+        _run_streamlit_job(**retry_payload)
+    elif streamlit_backend.button("Start Translation", type="primary", use_container_width=True, disabled=request is None):
+        request["overrides"]["paper_list"] = inputs["paper_list"]
+        request["project_items"] = inputs["project_items"]
+        _run_streamlit_job(request, title="Current Run")
 
     _render_history()
 

@@ -13,6 +13,7 @@ import asyncio
 import aiohttp
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from src.configuration import term_updates_enabled
 from src.utils.progress import log_message, report_progress
 
 base_dir = os.getcwd()
@@ -35,10 +36,7 @@ class TranslatorAgent(BaseToolAgent):
                  ):
         super().__init__(agent_name="TranslatorAgent", config=config)
         self.config = config
-        if(config.get("update_term") == "True"):
-            self.update_term = True 
-            self.update_term = False
-        # self.update_term = config.get("update_term", False)
+        self.update_term = term_updates_enabled(config.get("update_term", False))
         self.model = config["llm_config"].get("model", "gpt-4o")
         self.base_url = config["llm_config"].get("base_url", None)
         self.API_KEY = config["llm_config"].get("api_key", None)
@@ -383,7 +381,7 @@ class TranslatorAgent(BaseToolAgent):
                                                             )
                 
             try:
-                if self.update_term == True:
+                if self.update_term:
                     src_text = self._extract_text_from_tex(transed_section["content"])
                     tgt_text = self._extract_text_from_tex(transed_section["trans_content"])
                     term_text = await self._request_llm_for_extract_terms(pm.extract_terminology_system_prompt,
@@ -436,7 +434,7 @@ class TranslatorAgent(BaseToolAgent):
                                                                                           type="cap",
                                                                                           session=session)
             try:
-                if self.update_term == True:
+                if self.update_term:
                     src_text = self._extract_text_from_tex(transed_caption["content"])
                     tgt_text = self._extract_text_from_tex(transed_caption["trans_content"])
                     term_text = await self._request_llm_for_extract_terms(pm.extract_terminology_system_prompt,
@@ -498,7 +496,7 @@ class TranslatorAgent(BaseToolAgent):
 
             if env["need_trans"]:
                 try:
-                    if self.update_term == True:
+                    if self.update_term:
                         src_text = self._extract_text_from_tex(transed_env["content"])
                         tgt_text = self._extract_text_from_tex(transed_env["trans_content"])
                         text = await self._request_llm_for_extract_terms(pm.extract_terminology_system_prompt,
@@ -694,7 +692,7 @@ class TranslatorAgent(BaseToolAgent):
     def _updated_term_dict_v2(self, text: str) -> None:
 
         new_term_dict = {}
-        lines = text.split('\n')[1:]
+        lines = text.splitlines()
         for line in lines:
             line = line.strip()
             if not line:

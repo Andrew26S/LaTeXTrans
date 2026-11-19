@@ -10,8 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from main import main
 from src.formats.latex.utils import download_tex, is_already_downloaded
-from src.gui.streamlit_app import _retry_inputs
-from src.runtime import run_translation
+from src.runtime import build_retry_request, run_translation
 
 
 class PreparationFailureTests(unittest.TestCase):
@@ -64,7 +63,9 @@ class PreparationFailureTests(unittest.TestCase):
         failed = result["failed_projects"]
         self.assertIn("download", failed[0]["error"])
         self.assertIn("Invalid local project", failed[1]["error"])
-        self.assertEqual(_retry_inputs(failed), {"project_items": [missing], "paper_list": [paper]})
+        retry = build_retry_request(failed, config_path=str(self.config))
+        self.assertEqual(retry["project_items"], [missing])
+        self.assertEqual(retry["overrides"], {"paper_list": [paper], "replace_paper_list": True})
         self.assertEqual([(e["type"], e["index"], e["total"]) for e in events], [
             ("project_error", 1, 2), ("project_error", 2, 2),
         ])
@@ -129,7 +130,7 @@ class PreparationFailureTests(unittest.TestCase):
         ):
             get.return_value.__enter__.return_value.iter_content.return_value = [data.getvalue()]
             get.return_value.content = b"original pdf"
-            retry = run_translation(str(self.config), _retry_inputs(first["failed_projects"]))
+            retry = run_translation(**build_retry_request(first["failed_projects"], config_path=str(self.config)))
         self.assertFalse(retry["failed_projects"])
         self.assertEqual((project / "main.tex").read_text(), "fresh")
         self.assertFalse((project / "partial.tex").exists())
@@ -171,10 +172,12 @@ class PreparationFailureTests(unittest.TestCase):
         ):
             coordinator.return_value.workflow_latextrans.side_effect = [ValueError("compiler failed"), "ok", "ok"]
             first = run_translation(str(self.config))
-            inputs = _retry_inputs(first["failed_projects"])
-            self.assertEqual(inputs, {"paper_list": [failed], "project_items": [], "category": {failed: ["cs.AI"]}})
+            request = build_retry_request(first["failed_projects"], config_path=str(self.config), overrides={"mode": 2})
+            self.assertEqual(request["overrides"], {
+                "mode": 2, "replace_paper_list": True, "paper_list": [failed], "category": {failed: ["cs.AI"]},
+            })
             categories.reset_mock()
-            retried = run_translation(str(self.config), {**inputs, "replace_paper_list": True})
+            retried = run_translation(**request)
             categories.assert_not_called()
         self.assertEqual(retried["projects"], [str(self.sources / failed)])
         self.assertEqual(coordinator.call_args.kwargs["config"]["category"][failed], ["cs.AI"])

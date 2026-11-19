@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
-import toml
+from src.configuration import DEFAULT_CONFIG_PATH, DEFAULT_LOCAL_CONFIG_PATH, load_runtime_config
 
 from src.utils.paths import create_unique_dir
 from src.utils.progress import log_message
@@ -18,7 +18,6 @@ from src.formats.latex.utils import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_LOCAL_CONFIG_PATH = "config/local.toml"
 ProjectEventCallback = Callable[[Dict[str, Any]], None]
 
 
@@ -75,56 +74,16 @@ def split_multivalue_text(value: str) -> List[str]:
     return [item.strip() for item in normalized.split(",") if item.strip()]
 
 
-def load_runtime_config(
-    config_path: str = "config/default.toml",
-    overrides: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    config = toml.load(config_path)
-    overrides = overrides or {}
-
-    llm_config = config.setdefault("llm_config", {})
-    if overrides.get("url"):
-        llm_config["base_url"] = overrides["url"]
-    if overrides.get("model"):
-        llm_config["model"] = overrides["model"]
-    if overrides.get("key"):
-        llm_config["api_key"] = overrides["key"]
-
-    for key in ("source", "output", "source_language", "target_language", "user_term"):
-        if overrides.get(key):
-            mapped_key = {
-                "source": "tex_sources_dir",
-                "output": "output_dir",
-                "source_language": "source_language",
-                "target_language": "target_language",
-                "user_term": "user_term",
-            }[key]
-            config[mapped_key] = overrides[key]
-
-    if overrides.get("mode") is not None:
-        config["mode"] = overrides["mode"]
-    if overrides.get("update_term") is not None:
-        config["update_term"] = overrides["update_term"]
-
-    if overrides.get("category"):
-        config.setdefault("category", {}).update(overrides["category"])
-
-    extra_papers = overrides.get("paper_list") or []
-    if overrides.get("replace_paper_list"):
-        config["paper_list"] = list(extra_papers)
-    elif extra_papers:
-        config.setdefault("paper_list", [])
-        config["paper_list"].extend(extra_papers)
-
-    return config
-
-
 def prepare_projects(
     config: Dict[str, Any],
     project_items: Optional[Iterable[str]] = None,
     all_existing: bool = False,
 ) -> tuple[List[str], List[Dict[str, Any]], str, str]:
     input_items = config.get("paper_list", [])
+    project_items = [item for item in (project_items or []) if item]
+    if not input_items and not project_items and not all_existing:
+        raise ValueError("No input provided. Supply an arXiv ID or local project, configure paper_list, or enable all-existing.")
+
     projects_dir = str(resolve_path(config.get("tex_sources_dir", "tex source")))
     output_dir = str(resolve_path(config.get("output_dir", "outputs")))
 
@@ -148,7 +107,6 @@ def prepare_projects(
         else:
             record_failure(item, "Invalid arXiv ID or URL.", arxiv=True)
 
-    project_items = [item for item in (project_items or []) if item]
     categories = config.setdefault("category", {})
     for paper in dict.fromkeys(paper_list):
         try:
@@ -173,8 +131,6 @@ def prepare_projects(
             record_failure(path, e)
 
     if not input_items and not project_items:
-        if not all_existing:
-            raise ValueError("No input provided. Use --arxiv or --project. To process existing projects, pass --all-existing.")
         log_message("No explicit inputs. Processing all existing projects in the specified directory.")
         extraction_errors = extract_compressed_files(projects_dir)
         for archive, reason in extraction_errors.items():
@@ -196,7 +152,7 @@ def run_projects(
     output_dir: str,
     event_callback: Optional[ProjectEventCallback] = None,
     preparation_failures: Sequence[Dict[str, Any]] = (),
-) -> Dict[str, List[Dict[str, Any]]]:
+) -> Dict[str, Any]:
     completed_projects: List[Dict[str, Any]] = []
     failed_projects: List[Dict[str, Any]] = []
     total_projects = len(projects) + len(preparation_failures)
@@ -243,14 +199,43 @@ def run_projects(
             project["compilation_status"] = status
         if event_callback:
             event_callback({"type": event_type, **project})
+    pdfs = []
+    for project in completed_projects:
+        translated = Path(project["pdf_path"])
+        name = project["project_name"]
+        original = translated.parent / name / f"{name}.pdf"
+        pdfs.extend(str(path) for path in (translated, original) if path.is_file())
     return {
+        "pdfs": pdfs,
         "completed_projects": completed_projects,
         "failed_projects": failed_projects,
     }
 
 
+def build_retry_request(
+    failures: Sequence[Dict[str, Any]],
+    *,
+    config_path: str = DEFAULT_CONFIG_PATH,
+    overrides: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build arguments for run_translation using only this batch's failed inputs."""
+    retry_overrides = dict(overrides or {})
+    retry_overrides["paper_list"] = [item["arxiv_id"] for item in failures if "arxiv_id" in item]
+    retry_overrides["replace_paper_list"] = True
+    categories = dict(retry_overrides.get("category") or {})
+    categories.update({item["arxiv_id"]: item["categories"] for item in failures if "categories" in item})
+    if categories:
+        retry_overrides["category"] = categories
+    return {
+        "config_path": config_path,
+        "overrides": retry_overrides,
+        "project_items": [item["project_dir"] for item in failures if "arxiv_id" not in item],
+        "all_existing": False,
+    }
+
+
 def run_translation(
-    config_path: str = "config/default.toml",
+    config_path: str = DEFAULT_CONFIG_PATH,
     overrides: Optional[Dict[str, Any]] = None,
     project_items: Optional[Iterable[str]] = None,
     all_existing: bool = False,
@@ -274,6 +259,5 @@ def run_translation(
         "projects": projects,
         "projects_dir": projects_dir,
         "output_dir": output_dir,
-        "completed_projects": project_status["completed_projects"],
-        "failed_projects": project_status["failed_projects"],
+        **project_status,
     }

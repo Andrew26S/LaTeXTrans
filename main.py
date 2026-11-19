@@ -1,7 +1,8 @@
 import argparse
 
 from src.utils.progress import log_message
-from src.runtime import DEFAULT_LOCAL_CONFIG_PATH, run_translation, split_cli_items
+from src.configuration import DEFAULT_LOCAL_CONFIG_PATH
+from src.runtime import run_translation, split_cli_items
 
 
 def main() -> int:
@@ -10,9 +11,9 @@ def main() -> int:
         "--config", type=str, default=DEFAULT_LOCAL_CONFIG_PATH,
         help="Path to the config TOML file (default: %(default)s).",
     )
-    parser.add_argument("--model", type=str, default="", help="Model for translating.")
-    parser.add_argument("--url", type=str, default="", help="Model url.")
-    parser.add_argument("--key", type=str, default="", help="Model key.")
+    parser.add_argument("--model", type=str, help="Model for translating.")
+    parser.add_argument("--url", type=str, help="Model url.")
+    parser.add_argument("--key", type=str, help="Model key.")
     parser.add_argument("--arxiv", nargs="+", default=[], help="arXiv ID(s), comma-separated.")
     parser.add_argument(
         "--project",
@@ -20,8 +21,8 @@ def main() -> int:
         default=[],
         help="Local project path(s) or archive path(s), comma-separated.",
     )
-    parser.add_argument("--output", type=str, default="", help="output directory.")
-    parser.add_argument("--source", type=str, default="", help="tex source directory.")
+    parser.add_argument("--output", type=str, help="output directory.")
+    parser.add_argument("--source", type=str, help="tex source directory.")
     parser.add_argument(
         "--all-existing",
         action="store_true",
@@ -29,16 +30,14 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    overrides = {
+        key: value for key, value in vars(args).items()
+        if key in ("model", "url", "key", "source", "output") and value is not None
+    }
+    overrides["paper_list"] = split_cli_items(args.arxiv)
     result = run_translation(
         config_path=args.config,
-        overrides={
-            "model": args.model,
-            "url": args.url,
-            "key": args.key,
-            "source": args.source,
-            "output": args.output,
-            "paper_list": split_cli_items(args.arxiv),
-        },
+        overrides=overrides,
         project_items=split_cli_items(args.project),
         all_existing=args.all_existing,
     )
