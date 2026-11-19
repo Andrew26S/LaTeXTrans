@@ -1,5 +1,4 @@
 import os
-import shutil
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import sys
@@ -46,7 +45,7 @@ class CoordinatorAgent:
         """
         return self.loop.run_until_complete(coro)
 
-    async def workflow_latextrans_async(self) -> None:
+    async def workflow_latextrans_async(self) -> str:
         """
         initializes the tool agent based on the provided agent name key.
         """
@@ -83,22 +82,19 @@ class CoordinatorAgent:
         generator_agent = GeneratorAgent(config=self.config,
                                          project_dir=self.project_dir,
                                          output_dir=transed_project_dir)
-        try:
-        
-            PDF_file_path = generator_agent.execute()
-        except Exception as e:
-            print(f"🤖🚧 {self.name}: Failed to translated {os.path.basename(self.project_dir)}.{e}")
-            return
-        
-        if PDF_file_path:
-            new_PDF_path = os.path.join(transed_project_dir, f"{self.target_language}_{base_name}.pdf")
-            shutil.move(PDF_file_path, new_PDF_path)
-            print(f"🤖🎉 {self.name}: Successfully translated {os.path.basename(self.project_dir)} to {new_PDF_path}.")
-        else:
-            print(f"🤖🚧 {self.name}: Failed to translated {os.path.basename(self.project_dir)}.")
+        generated_pdf = generator_agent.execute()
+        if not generated_pdf:
+            raise RuntimeError("Compilation produced no translated PDF.")
+        if not os.path.isfile(generated_pdf) or os.path.getsize(generated_pdf) == 0:
+            raise RuntimeError(f"Generated PDF is missing or empty: {generated_pdf}")
+
+        final_pdf = os.path.join(transed_project_dir, f"{self.target_language}_{base_name}.pdf")
+        os.replace(generated_pdf, final_pdf)
+        print(f"🤖🎉 {self.name}: Successfully translated {base_name} to {final_pdf}.")
+        return final_pdf
 
 
-    def workflow_latextrans(self) -> None:
+    def workflow_latextrans(self) -> str:
         """
         Initialize the tool agent and execute the LaTeX conversion workflow 
         (with event loop security management)
@@ -111,7 +107,7 @@ class CoordinatorAgent:
         asyncio.set_event_loop(self.loop)
 
         try:
-            self.loop.run_until_complete(self.workflow_latextrans_async())
+            return self.loop.run_until_complete(self.workflow_latextrans_async())
 
         finally:
             # Complete all asynchronous resource recycling

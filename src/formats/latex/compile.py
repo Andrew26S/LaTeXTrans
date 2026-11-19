@@ -1,8 +1,9 @@
-from typing import List, Dict, Any
-import re
 import os
 import subprocess
-from .utils import *
+import tempfile
+from pathlib import Path
+
+from .utils import find_main_tex_file
 
 class LaTexCompiler:
     def __init__(self, output_latex_dir: str):
@@ -16,31 +17,25 @@ class LaTexCompiler:
         if not tex_file_to_compile:
             print("⚠️ Warning: There is no main tex file to compile in this directory.")
             return None
-        print("Start compiling with pdflatex...⏳")
-        compile_out_dir_pdflatex = os.path.join(self.output_latex_dir, "build_pdflatex")
-        self._compile_with_pdflatex(tex_file_to_compile, compile_out_dir_pdflatex, engine="pdflatex")
-        pdf_files = [os.path.join(compile_out_dir_pdflatex, file) for file in os.listdir(compile_out_dir_pdflatex) if file.lower().endswith('.pdf')]
-        if pdf_files:
+        pdf_name = Path(tex_file_to_compile).with_suffix(".pdf").name
+        for engine, compile_tex in (
+            ("pdflatex", self._compile_with_pdflatex),
+            ("xelatex", self._compile_with_xelatex),
+        ):
+            build_dir = Path(self.output_latex_dir, f"build_{engine}")
+            try:
+                build_dir.mkdir()
+            except FileExistsError:
+                # A local source tree can include an earlier build of the same paper.
+                build_dir = Path(tempfile.mkdtemp(prefix=f"build_{engine}_", dir=self.output_latex_dir))
 
-            print(f"✅  Successfully generated PDF file !") 
-            return pdf_files[0]
-        else:
-            print(f"⚠️  Failed to generate PDF with pdflatex. 🔁Retrying with xelatex...⏳") 
-            compile_out_dir_xelatex = os.path.join(self.output_latex_dir, "build_xelatex")
-            self._compile_with_xelatex(tex_file_to_compile, compile_out_dir_xelatex, engine="xelatex")
-            pdf_files = [os.path.join(compile_out_dir_xelatex, file) for file in os.listdir(compile_out_dir_xelatex) if file.lower().endswith('.pdf')]
-            if pdf_files:
-                print(f"✅  Successfully generated PDF file !") 
-                return pdf_files[0]
-            else:
-                print(f"⚠️  Failed to generate PDF with xelatex. Please check the log.")
-                log_files_xelatex = [os.path.join(compile_out_dir_xelatex, file) for file in os.listdir(compile_out_dir_xelatex) if file.lower().endswith('.log')]
-                log_files_pdflatex = [os.path.join(compile_out_dir_pdflatex, file) for file in os.listdir(compile_out_dir_pdflatex) if file.lower().endswith('.log')]
-                if log_files_xelatex and log_files_pdflatex:
-                    print(f"📄 Log files for pdflatex: {log_files_pdflatex}")
-                    print(f"📄 Log files for xelatex: {log_files_xelatex}")
-                return None
-    
+            print(f"Compiling with {engine} in {build_dir}...")
+            compile_tex(tex_file_to_compile, str(build_dir))
+            pdf = build_dir / pdf_name
+            if pdf.is_file() and pdf.stat().st_size:
+                return str(pdf)
+            print(f"{engine} produced no translated PDF. See {build_dir} for logs.")
+        return None
 
     def compile_ja(self):
         """

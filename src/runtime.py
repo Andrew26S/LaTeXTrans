@@ -235,7 +235,7 @@ def run_projects(
                 project_dir=project_dir,
                 output_dir=output_dir,
             )
-            latex_trans.workflow_latextrans()
+            pdf_path = latex_trans.workflow_latextrans()
         except Exception as e:
             print(f"Error processing project {project_name}: {e}")
             failed_projects.append(
@@ -266,6 +266,7 @@ def run_projects(
                 "total": total_projects,
                 "project_name": project_name,
                 "project_dir": project_dir,
+                "pdf_path": pdf_path,
             }
         )
         if event_callback:
@@ -276,6 +277,7 @@ def run_projects(
                     "total": total_projects,
                     "project_name": project_name,
                     "project_dir": project_dir,
+                    "pdf_path": pdf_path,
                 }
             )
     return {

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import toml
 
-from src.agents.coordinator_agent import CoordinatorAgent
+from src.runtime import run_projects
 from src.formats.latex.prompts import *
 from src.formats.latex.utils import (
     batch_download_arxiv_tex,
@@ -101,7 +101,7 @@ def _extract_local_archive(archive_path: str, projects_dir: str) -> str:
     raise ValueError(f"Unsupported archive format: {archive_path}")
 
 
-def main():
+def main() -> int:
     """
     Main function to run the LaTeXTrans application.
     Allows overriding paper_list from command-line arguments.
@@ -195,21 +195,11 @@ def main():
     if not projects:
         raise ValueError("No valid TeX projects available for processing.")
 
-    total_projects = len(projects)
-    for idx, project_dir in enumerate(projects, start=1):
-        print(f"[{idx}/{total_projects}] Processing {os.path.basename(project_dir)}")
-
-        try:
-            latex_trans = CoordinatorAgent(
-                config=config,
-                project_dir=project_dir,
-                output_dir=output_dir,
-            )
-            latex_trans.workflow_latextrans()
-        except Exception as e:
-            print(f"Error processing project {os.path.basename(project_dir)}: {e}")
-            continue
+    result = run_projects(config, projects, output_dir)
+    failed = len(result["failed_projects"])
+    print(f"Completed {len(result['completed_projects'])} project(s), failed {failed}.")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

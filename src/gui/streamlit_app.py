@@ -15,15 +15,12 @@ DEFAULT_CONFIG_PATH = "config/local.toml"
 
 
 def _collect_result_pdfs(result: Dict[str, Any]) -> List[str]:
-    output_dir = Path(result["output_dir"])
-    target_language = result["config"].get("target_language", "ch")
     selected: List[str] = []
 
-    for project_dir in result["projects"]:
-        project_name = Path(project_dir).name
-        project_output_dir = output_dir / f"{target_language}_{project_name}"
-        translated_pdf = project_output_dir / f"{target_language}_{project_name}.pdf"
-        original_pdf = project_output_dir / project_name / f"{project_name}.pdf"
+    for project in result["completed_projects"]:
+        translated_pdf = Path(project["pdf_path"])
+        project_name = project["project_name"]
+        original_pdf = translated_pdf.parent / project_name / f"{project_name}.pdf"
 
         if translated_pdf.exists():
             selected.append(str(translated_pdf))
@@ -259,9 +256,11 @@ def _render_result_files(result: Dict[str, Any], params: Dict[str, Any], inputs:
                 except OSError:
                     streamlit_backend.warning(f"Could not read {pdf_path}")
     else:
-        streamlit_backend.info("No PDF files were found under the output directory yet.")
+        streamlit_backend.info("This run produced no PDF files.")
 
     if failed:
+        for project in failed:
+            streamlit_backend.text(f"{project['project_name']}: {project['error']}")
         failed_paths = [item["project_dir"] for item in failed]
         retry_payload = {
             "params": dict(params),
@@ -410,9 +409,15 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], tit
 
     stage_bar.progress(1.0)
     stage_text.markdown("**Stage** Finished")
-    results_placeholder.success(
-        f"Completed {len(result['completed_projects'])} project(s), failed {len(result['failed_projects'])}."
-    )
+    completed = len(result["completed_projects"])
+    failed = len(result["failed_projects"])
+    summary = f"Completed {completed} project(s), failed {failed}."
+    if not failed:
+        results_placeholder.success(summary)
+    elif completed:
+        results_placeholder.warning(summary)
+    else:
+        results_placeholder.error(summary)
     _render_result_files(result=result, params=params, inputs=inputs)
 
 
