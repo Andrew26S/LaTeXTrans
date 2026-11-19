@@ -58,24 +58,45 @@ cd LaTeXTrans
 pip install -e .
 ```
 
-#### 2. 安装MikTex（推荐, 更轻量）或TeXLive
+#### 2. 安装用于生成 PDF 的 TeX 环境
 
-如需编译LaTeX文件（例如生成PDF输出），需要安装 [MikTex](https://miktex.org/download) 或 [TeXLive](https://www.tug.org/texlive/) !
+在 Ubuntu（含 WSL 中的 Ubuntu）上，建议用 apt 安装 TeX Live。翻译英文论文并生成中文 PDF，可以先安装编译工具、中文支持和字体。
+
+```bash
+sudo apt update
+sudo apt install latexmk texlive-xetex texlive-latex-recommended texlive-lang-chinese
+sudo apt install texlive-fonts-recommended fonts-noto-cjk fonts-noto-cjk-extra
+```
+
+下面几组包按论文模板的需要选装。磁盘空间有限时，可以等编译提示缺少宏包后再安装对应的包。
+
+```bash
+# 扩展宏包、科学排版和绘图
+sudo apt install texlive-latex-extra texlive-science texlive-pictures
+
+# ACM、IEEE 等出版模板及 BibTeX 参考文献样式
+sudo apt install texlive-publishers texlive-bibtex-extra
+
+# 额外字体（如 inconsolata、newtxmath）和人文排版宏包（如 dramatist）
+sudo apt install texlive-fonts-extra texlive-humanities
+```
+
+最后一组可以分开安装。在 Ubuntu 24.04 上，仅 `texlive-fonts-extra` 的安装体积就超过 1 GiB。
 
  > [!IMPORTANT]
-*对于 MikTex，安装时请务必选择 “install on the fly”，此外，您需要额外安装 [Strawberry Perl](http://strawberryperl.com/) 支持编译。
+> Windows 用户如果选用 MiKTeX，请开启按需安装宏包，并安装 Perl 供 `latexmk` 使用。[MiKTeX](https://miktex.org/download) · [Strawberry Perl](https://strawberryperl.com/)
 
 
 # ⚙️ 配置说明
 
 
-使用前请编辑配置文件：
+首次使用时，在仓库根目录复制配置模板。CLI 和 GUI 默认都读取 `config/local.toml`。
 
-```arduino
-config/default.toml
+```bash
+cp -n config/default.toml config/local.toml
 ```
 
-设置语言模型的API密钥和基础URL：
+在 `config/local.toml` 的 `[llm_config]` 中填写模型名、API 密钥和完整的聊天补全接口 URL。CLI 也可以通过 `--config 路径` 指定其他配置文件。
 
 ```toml
 model = " " # model name (For example, deepseek-chat)
