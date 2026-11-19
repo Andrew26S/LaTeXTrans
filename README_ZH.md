@@ -40,6 +40,8 @@ LaTeXTrans 是一个基于多智能体协作的结构化 LaTeX 文档翻译系�
  
 # 🛠️ 安装指南
 
+Python 3.10 系列需使用 3.10.12 或更高补丁版本，3.11 系列需使用 3.11.4 或更高补丁版本，也可使用 Python 3.12 及以上版本。项目使用这些版本提供的 tar 解压过滤功能处理论文源码。
+
 #### 1. 克隆仓库
 
 ```bash
@@ -51,7 +53,7 @@ pip install -e .
 #### （可选）使用 Conda 虚拟环境
 
 ```bash
-conda create -n latextrans python=3.10 -y
+conda create -n latextrans "python>=3.10.12,<3.11" -y
 conda activate latextrans
 git clone https://github.com/NiuTrans/LaTeXTrans.git
 cd LaTeXTrans

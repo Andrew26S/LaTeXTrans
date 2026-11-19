@@ -41,8 +41,9 @@ def load_runtime_config(
     if overrides.get("update_term") is not None:
         config["update_term"] = overrides["update_term"]
     config["update_term"] = term_updates_enabled(config.get("update_term", False))
-    if config.get("mode", 0) not in (0, 1, 2):
-        raise ValueError("mode must be 0, 1 or 2.")
+    mode = config.get("mode", 0)
+    if type(mode) is not int or mode not in (0, 1, 2):
+        raise ValueError("mode must be an integer: 0, 1 or 2.")
 
     if overrides.get("category"):
         config.setdefault("category", {}).update(overrides["category"])

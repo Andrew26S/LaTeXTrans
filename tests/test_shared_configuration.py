@@ -107,6 +107,18 @@ class SharedConfigurationTests(unittest.TestCase):
                     self.assertEqual(app.session_state.job_history[0]["inputs"], papers[:1])
                     self.assertFalse(app.session_state.job_history[0]["failed_projects"])
 
+    def test_mode_requires_a_supported_toml_integer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "config.toml")
+            for value in (2.0, True, "2", -1, 3):
+                with self.subTest(value=value):
+                    path.write_text(toml.dumps({"mode": value}))
+                    with self.assertRaisesRegex(ValueError, "mode must be an integer"):
+                        load_runtime_config(str(path))
+            for value in (0, 1, 2):
+                path.write_text(toml.dumps({"mode": value}))
+                self.assertEqual(load_runtime_config(str(path))["mode"], value)
+
     def test_term_updates_apply_in_terminology_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory, "config.toml")
