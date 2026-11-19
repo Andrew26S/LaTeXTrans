@@ -217,7 +217,8 @@ def _show_compile_attempts(projects, *, downloads=False):
                     try:
                         streamlit_backend.download_button(
                             f"Download PDF with errors ({attempt['engine']})", data=pdf.read_bytes(),
-                            file_name=pdf.name, mime="application/pdf", key=f"partial-{project['index']}-{pdf}",
+                            file_name=pdf.name, mime="application/pdf",
+                            key=f"partial-{project['index']}-{pdf}", on_click="ignore",
                         )
                     except OSError:
                         streamlit_backend.warning(f"Could not read {pdf}")
@@ -251,6 +252,7 @@ def _render_result_files(result: Dict[str, Any], params: Dict[str, Any], inputs:
                             file_name=pdf_path.name,
                             mime="application/pdf",
                             key=f"download_pdf_{idx}_{pdf_path.name}",
+                            on_click="ignore",
                         )
                 except OSError:
                     streamlit_backend.warning(f"Could not read {pdf_path}")

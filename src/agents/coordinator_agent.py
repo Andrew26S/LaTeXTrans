@@ -7,6 +7,7 @@ import asyncio
 base_dir = os.getcwd()
 sys.path.append(base_dir)
 
+from src.utils.paths import create_unique_dir
 from src.utils.progress import log_message
 from .tool_agents.base_tool_agent import BaseToolAgent
 from .tool_agents.parser_agent import ParserAgent
@@ -52,9 +53,7 @@ class CoordinatorAgent:
         initializes the tool agent based on the provided agent name key.
         """
         base_name = os.path.basename(self.project_dir)
-        transed_project_dir = os.path.join(self.output_dir, f"{self.target_language}_{base_name}")
-
-        os.makedirs(transed_project_dir, exist_ok=True)
+        transed_project_dir = str(create_unique_dir(Path(self.output_dir, f"{self.target_language}_{base_name}")))
 
         parser_agent = ParserAgent(config=self.config,
                                    project_dir=self.project_dir,

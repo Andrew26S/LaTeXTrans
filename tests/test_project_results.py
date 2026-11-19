@@ -1,3 +1,6 @@
+import gzip
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from src.agents import coordinator_agent
 from src.formats.latex.compile import LaTexCompiler
+from src.formats.latex.utils import compile_with_latexmk
 from src.gui.streamlit_app import _collect_result_pdfs
 from src.runtime import run_projects
 
@@ -138,3 +142,123 @@ class ProjectResultTests(unittest.TestCase):
             self.assertEqual((attempt["engine"], attempt["status"], attempt["exit_code"]), ("lualatex", "failed", None))
             self.assertIn("missing latexmk", Path(attempt["log_path"]).read_text())
             self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(shutil.which("latexmk") and shutil.which("pdflatex"), "requires TeX Live")
+    def test_standalone_root_relative_includes_and_agent_source_maps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            src = root / "src"
+            src.mkdir()
+            (src / "body.tex").write_text("Hello")
+            main = src / "main.tex"
+            document = r"\documentclass{article}\begin{document}\input{%s}\end{document}"
+            main.write_text(document % "src/body")
+            (root / ".latexmkrc").write_text("$jobname = 'article';\n")
+            cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                compile_with_latexmk("src/main.tex", "out")
+            finally:
+                os.chdir(cwd)
+            self.assertTrue((root / "out/article.pdf").is_file())
+            self.assertIn(b"src/body.tex", gzip.decompress((root / "out/article.synctex.gz").read_bytes()))
+
+            # The agent resolves includes from the main file's directory.
+            main.write_text(document % "body")
+            compiler = LaTexCompiler(str(src))
+            pdf = compiler.compile_source(root / "out")
+            self.assertEqual(pdf, str(root / "out/main.pdf"))
+            self.assertIn(b"body.tex", gzip.decompress(Path(pdf).with_suffix(".synctex.gz").read_bytes()))
+
+    def test_publishing_without_synctex_removes_previous_map(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "main.tex").write_text(r"\documentclass{article}")
+            (root / "main.synctex.gz").write_bytes(b"old map")
+
+            def build(cmd, **kwargs):
+                target = root / "build_pdflatex/main.pdf"
+                target.write_bytes(b"new pdf")
+                report = Path(next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("-deps-out=")))
+                report.write_text(f"{target.relative_to(root)} : main.tex")
+                return CompletedProcess(cmd, 0)
+
+            with patch("src.formats.latex.compile.subprocess.run", side_effect=build):
+                self.assertEqual(LaTexCompiler(directory).compile_source(root), str(root / "main.pdf"))
+            self.assertFalse((root / "main.synctex.gz").exists())
+
+    def test_same_named_projects_and_retry_keep_each_runs_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            projects = []
+            for content in ("broken", "good"):
+                project = root / content / "paper"
+                project.mkdir(parents=True)
+                (project / "main.tex").write_text(r"\documentclass{article}" + content)
+                (project / "paper.pdf").write_bytes(content.encode())
+                projects.append(str(project))
+
+            def build(cmd, stdout, **kwargs):
+                content = Path(cmd[-1]).read_bytes()
+                target_dir = Path(next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("-outdir=")))
+                target = target_dir / "main.pdf"
+                target.write_bytes(content)
+                stdout.write(content)
+                report = Path(next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("-deps-out=")))
+                report.write_text(f"{target} : main.tex")
+                return CompletedProcess(cmd, 12 if b"broken" in content else 0)
+
+            with (
+                patch.object(coordinator_agent, "ParserAgent"),
+                patch.object(coordinator_agent, "TranslatorAgent") as translator,
+                patch.object(coordinator_agent, "ValidatorAgent") as validator,
+                patch.object(coordinator_agent.GeneratorAgent, "read_file", return_value=[]),
+                patch("src.formats.latex.reconstruct.LatexConstructor"),
+                patch("src.formats.latex.compile.subprocess.run", side_effect=build),
+            ):
+                translator.return_value.execute = AsyncMock()
+                validator.return_value.execute.return_value = []
+                first = run_projects({}, projects, str(root / "outputs"))
+                Path(projects[0], "main.tex").write_text(r"\documentclass{article}fixed")
+                retry = run_projects({}, projects[:1], str(root / "outputs"))
+
+            attempts = first["failed_projects"][0]["compile_attempts"]
+            self.assertEqual(len(attempts), 2)
+            for attempt in attempts:
+                self.assertTrue(Path(attempt["pdf_path"]).read_bytes().endswith(b"broken"))
+                self.assertTrue(Path(attempt["log_path"]).read_bytes().endswith(b"broken"))
+            for result, marker in ((first, b"good"), (retry, b"fixed")):
+                translated, original = _collect_result_pdfs(result)
+                self.assertTrue(Path(translated).read_bytes().endswith(marker))
+                self.assertEqual(Path(original).read_bytes(), b"good" if result is first else b"broken")
+
+    def test_gui_marks_all_result_downloads_to_stay_on_current_run(self):
+        from streamlit.testing.v1 import AppTest
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            success = root / "ok.pdf"
+            success.write_bytes(b"ok")
+            attempts = []
+            for engine in ("pdflatex", "xelatex"):
+                partial = root / f"{engine}.pdf"
+                partial.write_bytes(b"partial")
+                attempts.append(dict(engine=engine, status="pdf_with_errors", pdf_path=str(partial)))
+            app = AppTest.from_string("""
+import streamlit as st
+from src.gui.streamlit_app import _ensure_session_state, _render_result_files
+_ensure_session_state()
+_render_result_files(st.session_state.result, {}, {"paper_list": [], "project_items": []})
+""")
+            app.session_state.current_run_logs = []
+            app.session_state.result = {
+                "projects": ["ok", "partial"], "output_dir": directory,
+                "completed_projects": [{"project_name": "ok", "pdf_path": str(success)}],
+                "failed_projects": [{"index": 2, "project_name": "partial", "project_dir": "partial",
+                                     "error": "failed", "compile_attempts": attempts}],
+            }
+            app.run(timeout=30)
+            self.assertFalse(app.exception)
+            buttons = app.get("download_button")
+            self.assertEqual(len(buttons), 3)
+            self.assertTrue(all(button.proto.ignore_rerun for button in buttons))

@@ -47,7 +47,7 @@ class GeneratorAgent(BaseToolAgent):
         latex_constructor.construct()
 
         report_progress(80, "Compiling PDF document...")
-        latex_compiler = LaTexCompiler(output_latex_dir=transed_latex_dir)
+        latex_compiler = LaTexCompiler(output_latex_dir=transed_latex_dir, build_root=self.output_dir)
         self.compile_attempts = latex_compiler.attempts
         pdf_file = latex_compiler.compile()
         if pdf_file:

@@ -775,7 +775,7 @@ def save_to_json(data, output_file):
 def compile_with_latexmk(tex_file: str, out_dir: str = "out", engine: str = "pdflatex"):
     from .compile import run_latexmk
 
-    run_latexmk(engine, Path(tex_file).resolve(), Path(out_dir).resolve(), publish=True)
+    run_latexmk(engine, Path(tex_file).resolve(), Path(out_dir).resolve(), publish=True, cwd=Path.cwd())
 
 
 def collect_latex_errors_with_logpath(folder: str):

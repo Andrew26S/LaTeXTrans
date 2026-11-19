@@ -33,7 +33,10 @@ def _reported_pdf(report: Path, source_dir: Path, build_dir: Path) -> Optional[s
     return None
 
 
-def run_latexmk(engine: str, tex_file: Path, output_dir: Path, *, publish=False) -> CompileAttempt:
+def run_latexmk(
+    engine: str, tex_file: Path, output_dir: Path, *, publish=False, cwd: Optional[Path] = None,
+) -> CompileAttempt:
+    working_dir = tex_file.parent if cwd is None else cwd
     build_dir = output_dir / f"build_{engine}"
     try:
         build_dir.mkdir(parents=True)
@@ -49,19 +52,25 @@ def run_latexmk(engine: str, tex_file: Path, output_dir: Path, *, publish=False)
             f"-deps-out={report}", str(tex_file),
         ]
         try:
-            process = subprocess.run(cmd, cwd=tex_file.parent, stdout=output, stderr=subprocess.STDOUT)
+            process = subprocess.run(cmd, cwd=working_dir, stdout=output, stderr=subprocess.STDOUT)
             exit_code = process.returncode
         except OSError as exc:
             output.write(str(exc).encode("utf-8"))
             exit_code = None
-        pdf = _reported_pdf(report, tex_file.parent, build_dir)
+        pdf = _reported_pdf(report, working_dir, build_dir)
 
     status: CompileStatus = "failed"
     if pdf:
         status = "success" if exit_code == 0 else "pdf_with_errors"
         if publish and exit_code == 0:
             source = Path(pdf)
-            pdf = str(source.replace(output_dir / source.name))
+            target = output_dir / source.name
+            sidecar = source.with_suffix(".synctex.gz")
+            published_sidecar = target.with_suffix(".synctex.gz")
+            published_sidecar.unlink(missing_ok=True)
+            pdf = str(source.replace(target))
+            if sidecar.is_file():
+                sidecar.replace(published_sidecar)
     exit_detail = "could not start latexmk" if exit_code is None else f"latexmk exit {exit_code}"
     log_message(f"{engine}: {status} ({exit_detail}), log: {log}")
     if pdf:
@@ -70,8 +79,9 @@ def run_latexmk(engine: str, tex_file: Path, output_dir: Path, *, publish=False)
 
 
 class LaTexCompiler:
-    def __init__(self, output_latex_dir: str):
+    def __init__(self, output_latex_dir: str, build_root: Optional[str] = None):
         self.output_latex_dir = output_latex_dir
+        self.build_root = Path(build_root or output_latex_dir)
         self.attempts: list[CompileAttempt] = []
 
     def compile(self):
@@ -93,7 +103,7 @@ class LaTexCompiler:
             log_message("No main TeX file found.")
             return None
         tex_file = Path(main_file).resolve()
-        parent = Path(output_dir or self.output_latex_dir).resolve()
+        parent = (output_dir or self.build_root).resolve()
         for engine in engines:
             attempt = run_latexmk(engine, tex_file, parent, publish=output_dir is not None)
             self.attempts.append(attempt)

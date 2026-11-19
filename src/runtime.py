@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import toml
 
+from src.utils.paths import create_unique_dir
 from src.utils.progress import log_message
 from src.agents.coordinator_agent import CoordinatorAgent
 from src.formats.latex.utils import (
@@ -50,18 +51,6 @@ def archive_project_dir(archive_path: str, projects_dir: str) -> str:
     else:
         stem = os.path.splitext(name)[0]
     return os.path.join(projects_dir, stem)
-
-
-def create_unique_dir(base_dir: Path) -> Path:
-    index = 0
-    candidate = base_dir
-    while True:
-        try:
-            candidate.mkdir(parents=True)
-            return candidate
-        except FileExistsError:
-            index += 1
-            candidate = base_dir.with_name(f"{base_dir.name}_{index}")
 
 
 def extract_local_archive(archive_path: str, projects_dir: str) -> str:
