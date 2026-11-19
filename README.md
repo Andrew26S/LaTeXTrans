@@ -42,7 +42,7 @@ LaTeXTrans is a structured LaTeX document translation system based on multi-agen
 
 # 🛠️ Installation Guide
 
-Use Python 3.10.12 or later in the 3.10 series, 3.11.4 or later in the 3.11 series, or Python 3.12+. These versions support filtered tar extraction for paper sources.
+LaTeXTrans requires Python 3.12 or later.
 
 #### 1. Clone Repository
 
@@ -55,7 +55,7 @@ pip install -e .
 #### (Optional) Use Conda Environment
 
 ```bash
-conda create -n latextrans "python>=3.10.12,<3.11" -y
+conda create -n latextrans python=3.12 -y
 conda activate latextrans
 git clone https://github.com/NiuTrans/LaTeXTrans.git
 cd LaTeXTrans

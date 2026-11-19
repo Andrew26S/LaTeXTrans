@@ -8,7 +8,7 @@ The CLI (`main.py`) and Streamlit interface (`src/gui/`) both call `run_translat
 
 ## Setup and Local Development
 
-Run these commands from the repository root in an activated Python environment.
+Run these commands from the repository root in an activated Python 3.12+ environment.
 
 - `python -m pip install -e .` installs the package, its dependencies, and both command-line entry points in editable mode.
 - `cp -n config/default.toml config/local.toml` creates the local configuration on first use. Set the model, API key, and full chat completions URL under `[llm_config]` in the Git-ignored local file.

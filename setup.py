@@ -17,7 +17,7 @@ def load_requirements(path: str) -> List[str]:
 setup(
     name="LaTeXTrans",
     version="0.1.0",
-    python_requires=">=3.10.12,!=3.11.0,!=3.11.1,!=3.11.2,!=3.11.3",
+    python_requires=">=3.12",
     packages=find_packages(),
     py_modules=["main"],
     install_requires=load_requirements("requirements.txt"),
