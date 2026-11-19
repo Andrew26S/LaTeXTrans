@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 from src.configuration import DEFAULT_CONFIG_PATH, DEFAULT_LOCAL_CONFIG_PATH, load_runtime_config
 
 from src.utils.paths import create_unique_dir
+from src.utils.translation_output import pdf_revision, translation_slot
 from src.utils.progress import log_message
 from src.agents.coordinator_agent import CoordinatorAgent
 from src.formats.latex.utils import (
@@ -63,6 +64,7 @@ def prepare_projects(
     config: Dict[str, Any],
     project_items: Optional[Iterable[str]] = None,
     all_existing: bool = False,
+    archive_inputs: Optional[Dict[str, str]] = None,
 ) -> tuple[List[str], List[Dict[str, Any]], str, str]:
     input_items = config.get("paper_list", [])
     project_items = [item for item in (project_items or []) if item]
@@ -109,7 +111,10 @@ def prepare_projects(
             if os.path.isdir(path):
                 projects.append(path)
             elif is_local_archive(path):
-                projects.append(extract_local_archive(path, projects_dir))
+                extracted = extract_local_archive(path, projects_dir)
+                projects.append(extracted)
+                if archive_inputs is not None:
+                    archive_inputs[extracted] = path
             else:
                 record_failure(path, "Invalid local project path.")
         except Exception as e:
@@ -137,9 +142,14 @@ def run_projects(
     output_dir: str,
     event_callback: Optional[ProjectEventCallback] = None,
     preparation_failures: Sequence[Dict[str, Any]] = (),
+    archive_inputs: Optional[Dict[str, str]] = None,
+    confirm_replace: Optional[Callable[[Path], bool]] = None,
+    replace_revisions: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     completed_projects: List[Dict[str, Any]] = []
     failed_projects: List[Dict[str, Any]] = []
+    pending_projects = []
+    cancelled_projects = []
     total_projects = len(projects) + len(preparation_failures)
     for idx, failure in enumerate(preparation_failures, start=1):
         entry = {**failure, "index": idx, "total": total_projects}
@@ -150,11 +160,14 @@ def run_projects(
     sources = resolve_path(config.get("tex_sources_dir", "tex source"))
     paper_by_path = {str(sources / paper): paper for paper in extract_arxiv_ids(config.get("paper_list", []))}
     for idx, project_dir in enumerate(projects, start=len(preparation_failures) + 1):
-        project_name = os.path.basename(project_dir)
+        archive = (archive_inputs or {}).get(project_dir)
+        project_name = archive_stem(Path(archive)) if archive else os.path.basename(project_dir)
         log_message(f"[{idx}/{total_projects}] Processing {project_name}")
         project = {
             "index": idx, "total": total_projects, "project_name": project_name, "project_dir": project_dir,
         }
+        if archive:
+            project["input_archive"] = archive
         paper = paper_by_path.get(project_dir)
         if paper:
             project["arxiv_id"] = paper
@@ -164,8 +177,26 @@ def run_projects(
             event_callback({"type": "project_start", **project})
         coordinator = None
         try:
-            coordinator = CoordinatorAgent(config={**config, "arxiv_id": paper}, project_dir=project_dir, output_dir=output_dir)
-            project["pdf_path"] = coordinator.workflow_latextrans()
+            output_name = f"{config.get('target_language', 'ch')}_{project_name}"
+            with translation_slot(Path(output_dir), output_name) as destination:
+                pdf = destination / f"{output_name}.pdf"
+                revision = pdf_revision(pdf)
+                if replace_revisions and str(pdf) not in replace_revisions:
+                    raise ValueError("The selected output has changed. Start a new translation.")
+                if revision and (replace_revisions or {}).get(str(pdf)) != revision:
+                    if confirm_replace is None or not confirm_replace(pdf):
+                        project.update(pdf_path=str(pdf), revision=revision)
+                        deferred = confirm_replace is None
+                        (pending_projects if deferred else cancelled_projects).append(project)
+                        if event_callback:
+                            event_callback({"type": "project_pending" if deferred else "project_cancelled", **project})
+                        continue
+                coordinator = CoordinatorAgent(
+                    config={**config, "arxiv_id": paper}, project_dir=project_dir, output_dir=output_dir,
+                    destination=destination, output_name=output_name,
+                )
+                project["pdf_path"] = coordinator.workflow_latextrans()
+                project["revision"] = pdf_revision(Path(project["pdf_path"]))
         except Exception as e:
             log_message(f"Error processing project {project_name}: {e}")
             project["error"] = str(e)
@@ -191,9 +222,11 @@ def run_projects(
         original = translated.parent / name / f"{name}.pdf"
         pdfs.extend(str(path) for path in (translated, original) if path.is_file())
     return {
-        "pdfs": pdfs,
+        "pdfs": list(dict.fromkeys(pdfs)),
         "completed_projects": completed_projects,
         "failed_projects": failed_projects,
+        "pending_projects": pending_projects,
+        "cancelled_projects": cancelled_projects,
     }
 
 
@@ -216,12 +249,16 @@ def build_retry_request(
     categories.update({item["arxiv_id"]: item["categories"] for item in failures if "categories" in item})
     if categories:
         retry_overrides["category"] = categories
-    return {
+    request = {
         "config_path": config_path,
         "overrides": retry_overrides,
         "project_items": [item["project_dir"] for item in failures if "arxiv_id" not in item],
         "all_existing": False,
     }
+    prepared_archives = {item["project_dir"]: item["input_archive"] for item in failures if "input_archive" in item}
+    if prepared_archives:
+        request["prepared_archives"] = prepared_archives
+    return request
 
 
 def run_translation(
@@ -230,20 +267,30 @@ def run_translation(
     project_items: Optional[Iterable[str]] = None,
     all_existing: bool = False,
     event_callback: Optional[ProjectEventCallback] = None,
+    confirm_replace: Optional[Callable[[Path], bool]] = None,
+    replace_revisions: Optional[Dict[str, str]] = None,
+    prepared_archives: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     config = load_runtime_config(config_path=config_path, overrides=overrides)
+    archive_inputs = dict(prepared_archives or {})
     projects, preparation_failures, projects_dir, output_dir = prepare_projects(
         config=config,
         project_items=project_items,
-        all_existing=all_existing,
+        all_existing=all_existing, archive_inputs=archive_inputs,
     )
     project_status = run_projects(
         config=config,
         projects=projects,
         output_dir=output_dir,
         event_callback=event_callback,
-        preparation_failures=preparation_failures,
+        preparation_failures=preparation_failures, archive_inputs=archive_inputs,
+        confirm_replace=confirm_replace, replace_revisions=replace_revisions,
     )
+    for project in project_status["pending_projects"]:
+        request = build_retry_request([project], config_path=config_path, overrides=overrides, llm_config=config["llm_config"])
+        request["overrides"].update(source=projects_dir, output=output_dir, target_language=config["target_language"])
+        request["replace_revisions"] = {project["pdf_path"]: project["revision"]}
+        project["replace_request"] = request
     return {
         "config": config,
         "projects": projects,

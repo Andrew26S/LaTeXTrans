@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from main import main
+from main import confirm_replace, main
 
 
 class TranslationCliTests(unittest.TestCase):
@@ -25,6 +25,7 @@ class TranslationCliTests(unittest.TestCase):
             },
             project_items=["paper one.zip", "paper two"],
             all_existing=False,
+            confirm_replace=confirm_replace,
         )
 
     @patch("main.run_translation")

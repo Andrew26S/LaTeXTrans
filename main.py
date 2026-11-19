@@ -1,8 +1,20 @@
 import argparse
+from pathlib import Path
 
 from src.utils.progress import log_message
 from src.configuration import DEFAULT_LOCAL_CONFIG_PATH
 from src.runtime import run_translation, split_cli_items
+
+
+def confirm_replace(pdf: Path) -> bool:
+    try:
+        answer = input(f"Translation already exists at {pdf}. Replace it? [y/N] ")
+    except EOFError:
+        answer = ""
+    replace = answer.strip().lower() in {"y", "yes"}
+    if not replace:
+        log_message(f"Cancelled translation. Kept {pdf}.")
+    return replace
 
 
 def main() -> int:
@@ -40,9 +52,12 @@ def main() -> int:
         overrides=overrides,
         project_items=split_cli_items(args.project),
         all_existing=args.all_existing,
+        confirm_replace=confirm_replace,
     )
     failed = len(result["failed_projects"])
     log_message(f"Completed {len(result['completed_projects'])} project(s), failed {failed}.")
+    if result.get("cancelled_projects"):
+        log_message(f"Cancelled {len(result['cancelled_projects'])} project(s).")
     for project in result["failed_projects"]:
         if project.get("compilation_status") == "pdf_with_errors":
             log_message(f"PDFs with compilation errors for {project['project_name']}:")

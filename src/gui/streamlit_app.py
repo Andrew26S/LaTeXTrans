@@ -6,6 +6,7 @@ import streamlit as streamlit_backend
 
 from src.configuration import DEFAULT_LOCAL_CONFIG_PATH, load_runtime_config
 from src.runtime import run_translation, split_multivalue_text
+from src.utils.translation_output import pdf_revision
 from src.utils.progress import use_reporter
 
 
@@ -28,8 +29,12 @@ class StreamlitReporter:
 def _ensure_session_state() -> None:
     streamlit_backend.session_state.setdefault("job_history", [])
     streamlit_backend.session_state.setdefault("retry_payload", None)
+    streamlit_backend.session_state.setdefault("pending_translations", {})
     # Streamlit keeps existing session entries across application reloads.
     for item in streamlit_backend.session_state.job_history:
+        for project in item["completed_projects"]:
+            if "revision" not in project and project.get("pdf_path"):
+                project["revision"] = pdf_revision(Path(project["pdf_path"]))
         inputs = item["inputs"]
         if isinstance(inputs, dict):
             item["inputs"] = inputs["paper_list"] + inputs["project_items"]
@@ -163,6 +168,21 @@ def _queue_retry(retry, title):
     streamlit_backend.session_state.retry_payload = {"request": retry, "title": title}
 
 
+def _resolve_existing(key, replace):
+    project = streamlit_backend.session_state.pending_translations.pop(key)
+    if replace:
+        _queue_retry(project["replace_request"], f"Replace translation of {project['project_name']}")
+
+
+def _render_pending() -> None:
+    for key, project in streamlit_backend.session_state.pending_translations.items():
+        source = project.get("input_archive", project["project_dir"])
+        streamlit_backend.warning(f"Translating {source} would replace the existing PDF at {project['pdf_path']}.")
+        cancel, replace = streamlit_backend.columns(2)
+        cancel.button("Cancel translation", key=f"cancel-{key}", on_click=_resolve_existing, args=(key, False))
+        replace.button("Replace translation", key=f"replace-{key}", on_click=_resolve_existing, args=(key, True))
+
+
 def _show_compile_attempts(projects, *, downloads=False):
     for project in projects:
         attempts = project.get("compile_attempts", [])
@@ -255,12 +275,22 @@ def _render_history() -> None:
             streamlit_backend.write("Output Directory")
             streamlit_backend.code(item["output_dir"], language="text")
 
+            current = []
+            superseded_dirs = set()
+            for project in item["completed_projects"]:
+                path = Path(project["pdf_path"])
+                if "revision" in project and pdf_revision(path) != project["revision"]:
+                    streamlit_backend.caption(f"The translation of {project['project_name']} from this run was replaced or removed.")
+                    superseded_dirs.add(path.parent)
+                else:
+                    current.append(project)
             if item["pdfs"]:
                 streamlit_backend.write("PDF Files")
                 for pdf in item["pdfs"]:
-                    streamlit_backend.code(pdf, language="text")
+                    if not any(Path(pdf).is_relative_to(folder) for folder in superseded_dirs):
+                        streamlit_backend.code(pdf, language="text")
 
-            _show_compile_attempts(item["completed_projects"] + item["failed_projects"])
+            _show_compile_attempts(current + item["failed_projects"])
             if item["failed_projects"]:
                 streamlit_backend.write("Failed Projects")
                 streamlit_backend.code("\n".join(p["project_name"] for p in item["failed_projects"]), language="text")
@@ -316,11 +346,21 @@ def _run_streamlit_job(request: Dict[str, Any], title: str) -> None:
         results_placeholder.error(f"Run failed: {exc}")
         return
 
+    pending = result.get("pending_projects", [])
+    for project in pending:
+        key = (project["pdf_path"], project.get("input_archive", project["project_dir"]))
+        streamlit_backend.session_state.pending_translations[key] = project
+    if pending and not (result["completed_projects"] or result["failed_projects"]):
+        stage_text.text("Waiting for a replacement decision.")
+        return
+
     stage_bar.progress(1.0)
     stage_text.markdown("**Stage** Finished")
     completed = len(result["completed_projects"])
     failed = len(result["failed_projects"])
     summary = f"Completed {completed} project(s), failed {failed}."
+    if pending:
+        summary += f" Awaiting confirmation for {len(pending)}."
     if not failed:
         results_placeholder.success(summary)
     elif completed:
@@ -363,6 +403,7 @@ def main() -> None:
         request["project_items"] = inputs["project_items"]
         _run_streamlit_job(request, title="Current Run")
 
+    _render_pending()
     _render_history()
 
 

@@ -33,7 +33,7 @@ class ProjectResultTests(unittest.TestCase):
                 translator.return_value.execute = AsyncMock()
                 validator.return_value.execute.return_value = []
                 generator.return_value.execute.side_effect = [None, OSError("disk full"), str(generated)]
-                result = run_projects({}, projects, str(output), events.append)
+                result = run_projects({}, projects, str(output), events.append, confirm_replace=lambda pdf: True)
 
             failures = result["failed_projects"]
             self.assertEqual([p["project_dir"] for p in failures], projects[:2])
@@ -194,7 +194,7 @@ class ProjectResultTests(unittest.TestCase):
                 self.assertEqual(LaTexCompiler(directory).compile_source(root), str(root / "main.pdf"))
             self.assertFalse((root / "main.synctex.gz").exists())
 
-    def test_same_named_projects_and_retry_keep_each_runs_outputs(self):
+    def test_same_named_projects_require_replacement_and_keep_failed_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             projects = []
@@ -226,18 +226,22 @@ class ProjectResultTests(unittest.TestCase):
                 translator.return_value.execute = AsyncMock()
                 validator.return_value.execute.return_value = []
                 first = run_projects({}, projects, str(root / "outputs"))
+                translated, original = first["pdfs"]
+                self.assertTrue(Path(translated).read_bytes().endswith(b"good"))
+                self.assertEqual(Path(original).read_bytes(), b"good")
                 Path(projects[0], "main.tex").write_text(r"\documentclass{article}fixed")
-                retry = run_projects({}, projects[:1], str(root / "outputs"))
+                pending, = run_projects({}, projects[:1], str(root / "outputs"))["pending_projects"]
+                self.assertEqual(pending["pdf_path"], translated)
+                retry = run_projects({}, projects[:1], str(root / "outputs"), confirm_replace=lambda pdf: True)
 
             attempts = first["failed_projects"][0]["compile_attempts"]
             self.assertEqual(len(attempts), 2)
             for attempt in attempts:
                 self.assertTrue(Path(attempt["pdf_path"]).read_bytes().endswith(b"broken"))
                 self.assertTrue(Path(attempt["log_path"]).read_bytes().endswith(b"broken"))
-            for result, marker in ((first, b"good"), (retry, b"fixed")):
-                translated, original = result["pdfs"]
-                self.assertTrue(Path(translated).read_bytes().endswith(marker))
-                self.assertEqual(Path(original).read_bytes(), b"good" if result is first else b"broken")
+            self.assertEqual(retry["pdfs"], first["pdfs"])
+            self.assertTrue(Path(translated).read_bytes().endswith(b"fixed"))
+            self.assertEqual(Path(original).read_bytes(), b"broken")
 
     def test_gui_marks_all_result_downloads_to_stay_on_current_run(self):
         from streamlit.testing.v1 import AppTest

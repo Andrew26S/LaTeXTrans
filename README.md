@@ -143,6 +143,8 @@ This command will:
 2. Execute a workflow consisting of parsing, translation, refactoring and compilation
 3. Save the translated LaTeX project file of the paper and the PDF of the compiled translation in the outputs folder
 
+Each paper has a fixed output path for each target language. For example, the Chinese translation of `2410.05160` is saved to `outputs/ch_2410.05160/ch_2410.05160.pdf`. If that file exists, the CLI asks whether to translate again and replace it (Enter cancels). The GUI offers **Cancel translation** and **Replace translation**. The existing file is replaced only after the new translation compiles successfully.
+
 ### Batch Translation via ArXiv IDs
 
 You can translate multiple arXiv papers in one run (comma-separated):

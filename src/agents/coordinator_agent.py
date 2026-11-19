@@ -3,11 +3,12 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 import sys
 import asyncio
+import tempfile
 
 base_dir = os.getcwd()
 sys.path.append(base_dir)
 
-from src.utils.paths import create_unique_dir
+from src.utils.translation_output import preserve_diagnostics, publish_translation
 from src.utils.progress import log_message
 from .tool_agents.base_tool_agent import BaseToolAgent
 from .tool_agents.parser_agent import ParserAgent
@@ -27,7 +28,9 @@ class CoordinatorAgent:
     def __init__(self, 
                  config: Dict[str, Any],
                  project_dir: str = None,
-                 output_dir: Optional[str] = None
+                 output_dir: Optional[str] = None,
+                 destination: Optional[Path] = None,
+                 output_name: Optional[str] = None,
                  ):
         """
         Initializes the CoordinatorAgent.
@@ -41,6 +44,8 @@ class CoordinatorAgent:
         self.loop = asyncio.new_event_loop()
         self.mode = config.get("mode", 0)
         self.compile_attempts = []
+        self.output_name = output_name or f"{self.target_language}_{Path(project_dir).name}"
+        self.destination = destination or Path(output_dir, self.output_name)
 
     def run_async(self, coro):
         """
@@ -52,9 +57,23 @@ class CoordinatorAgent:
         """
         initializes the tool agent based on the provided agent name key.
         """
-        base_name = os.path.basename(self.project_dir)
-        transed_project_dir = str(create_unique_dir(Path(self.output_dir, f"{self.target_language}_{base_name}")))
+        root = Path(self.output_dir)
+        state = root / ".latextrans"
+        state.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="work-", dir=state) as tmp:
+            workspace = Path(tmp)
+            try:
+                await self._generate(str(workspace))
+            finally:
+                preserve_diagnostics(self.compile_attempts, workspace, root)
+            final_pdf = self.destination / f"{self.output_name}.pdf"
+            publish_translation(workspace, self.destination, final_pdf.name)
+            if self.compile_attempts:
+                self.compile_attempts[-1]["pdf_path"] = str(final_pdf)
+            log_message(f"Successfully translated {self.project_dir} to {final_pdf}.")
+            return str(final_pdf)
 
+    async def _generate(self, transed_project_dir: str) -> None:
         parser_agent = ParserAgent(config=self.config,
                                    project_dir=self.project_dir,
                                    output_dir=transed_project_dir)
@@ -94,13 +113,11 @@ class CoordinatorAgent:
         if not os.path.isfile(generated_pdf) or os.path.getsize(generated_pdf) == 0:
             raise RuntimeError(f"Generated PDF is missing or empty: {generated_pdf}")
 
-        final_pdf = os.path.join(transed_project_dir, f"{self.target_language}_{base_name}.pdf")
-        os.replace(generated_pdf, final_pdf)
-        if self.compile_attempts:
-            self.compile_attempts[-1]["pdf_path"] = final_pdf
-        log_message(f"🤖🎉 {self.name}: Successfully translated {base_name} to {final_pdf}.")
-        return final_pdf
-
+        os.replace(generated_pdf, Path(transed_project_dir, f"{self.output_name}.pdf"))
+        source_copy = Path(transed_project_dir, Path(self.project_dir).name)
+        published_name = self.output_name.removeprefix(f"{self.target_language}_")
+        if source_copy.is_dir() and source_copy.name != published_name:
+            source_copy.rename(source_copy.with_name(published_name))
 
     def workflow_latextrans(self) -> str:
         """
