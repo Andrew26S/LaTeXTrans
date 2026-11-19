@@ -5,6 +5,8 @@ import yaml
 import toml
 from pathlib import Path
 
+from src.utils.progress import log_message
+
 
 class BaseToolAgent(ABC):
     """
@@ -38,16 +40,9 @@ class BaseToolAgent(ABC):
             message (str): The message to log.
             level (str): The logging level. Defaults to "info".
         """
-        if level == "info":
-            print(f"[{self.agent_name}] [INFO] {message}")
-        elif level == "debug":
-            print(f"[{self.agent_name}] [DEBUG] {message}")
-        elif level == "warning":
-            print(f"[{self.agent_name}] [WARNING] {message}")
-        elif level == "error":
-            print(f"[{self.agent_name}] [ERROR] {message}")
-        else:
+        if level not in ("info", "debug", "warning", "error"):
             raise ValueError(f"Unknown log level: {level}")
+        log_message(f"[{self.agent_name}] [{level.upper()}] {message}")
 
     @abstractmethod
     def execute(self, data: Any, **kwargs: Any) -> Any:

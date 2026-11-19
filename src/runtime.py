@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import toml
 
+from src.utils.progress import log_message
 from src.agents.coordinator_agent import CoordinatorAgent
 from src.formats.latex.utils import (
     batch_download_arxiv_tex,
@@ -177,7 +178,7 @@ def prepare_projects(
         failure = {"project_name": source if arxiv else Path(source).name, "error": str(error)}
         failure["arxiv_id" if arxiv else "project_dir"] = source
         failures.append(failure)
-        print(f"Error preparing {source}: {error}")
+        log_message(f"Error preparing {source}: {error}")
 
     paper_list = []
     for item in input_items:
@@ -218,7 +219,7 @@ def prepare_projects(
     if not input_items and not project_items:
         if not all_existing:
             raise ValueError("No input provided. Use --arxiv or --project. To process existing projects, pass --all-existing.")
-        print("No explicit inputs. Processing all existing projects in the specified directory.")
+        log_message("No explicit inputs. Processing all existing projects in the specified directory.")
         existing_dirs = set(get_profect_dirs(projects_dir))
         extraction_errors = extract_compressed_files(projects_dir)
         failed_dirs = set()
@@ -251,7 +252,7 @@ def run_projects(
 
     for idx, project_dir in enumerate(projects, start=len(preparation_failures) + 1):
         project_name = os.path.basename(project_dir)
-        print(f"[{idx}/{total_projects}] Processing {project_name}")
+        log_message(f"[{idx}/{total_projects}] Processing {project_name}")
         project = {
             "index": idx, "total": total_projects, "project_name": project_name, "project_dir": project_dir,
         }
@@ -262,7 +263,7 @@ def run_projects(
             coordinator = CoordinatorAgent(config=config, project_dir=project_dir, output_dir=output_dir)
             project["pdf_path"] = coordinator.workflow_latextrans()
         except Exception as e:
-            print(f"Error processing project {project_name}: {e}")
+            log_message(f"Error processing project {project_name}: {e}")
             project["error"] = str(e)
             failed_projects.append(project)
             event_type = "project_error"

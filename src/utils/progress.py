@@ -1,119 +1,61 @@
+"""Route workflow messages and stage progress to the current run's output."""
+
 import sys
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Optional, Protocol
 
 
-class _LinePrinter:
-    _last_len = 0
-    _active = False
-
-    @classmethod
-    def update(cls, message):
-        text = "" if message is None else str(message)
-        pad = max(0, cls._last_len - len(text))
-        sys.stdout.write("\r" + text + (" " * pad))
-        sys.stdout.flush()
-        cls._last_len = len(text)
-        cls._active = True
-
-    @classmethod
-    def finish(cls):
-        if cls._active:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-        cls._last_len = 0
-        cls._active = False
+class Reporter(Protocol):
+    def log(self, message: str) -> None: ...
+    def progress(self, percent: int, message: str) -> None: ...
 
 
-class _ProgressBar:
-    def __init__(self, value=0):
-        self.value = value
+class CliReporter:
+    def __init__(self):
+        self.line_width = 0
 
-    def progress(self, value, text=None):
-        self.value = value
-        ratio = value
-        if isinstance(value, (int, float)):
-            if value > 1:
-                ratio = value / 100.0
-            ratio = max(0.0, min(1.0, float(ratio)))
-            width = 24
-            filled = int(width * ratio)
-            bar = "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
-            percent = f"{ratio * 100:5.1f}%"
-            msg = f"{bar} {percent}"
-            if text:
-                msg = f"{msg} {text}"
-            _LinePrinter.update(msg)
-        elif text:
-            _LinePrinter.update(text)
-        return self
-
-
-class _Status:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def text(self, message):
-        _LinePrinter.update(message)
-
-    def success(self, message):
-        _LinePrinter.finish()
+    def log(self, message: str) -> None:
+        if self.line_width:
+            print()
+            self.line_width = 0
         print(message)
 
-    def error(self, message):
-        _LinePrinter.finish()
-        print(message)
-
-    def progress(self, value=0, text=None):
-        bar = _ProgressBar(value=value)
-        if text:
-            _LinePrinter.update(text)
-        return bar
-
-    def empty(self):
-        _LinePrinter.finish()
-        return None
+    def progress(self, percent: int, message: str) -> None:
+        line = f"[{percent:3d}%] {message}"
+        if not sys.stdout.isatty():
+            self.log(line)
+            return
+        print("\r" + line.ljust(self.line_width), end="", flush=True)
+        self.line_width = len(line)
+        if percent == 100:
+            print()
+            self.line_width = 0
 
 
-class _CliProgress:
-    @staticmethod
-    def empty():
-        return _Status()
-
-    @staticmethod
-    def progress(value=0, text=None):
-        bar = _ProgressBar(value=value)
-        if text:
-            _LinePrinter.update(text)
-        return bar
-
-    @staticmethod
-    def success(message):
-        _LinePrinter.finish()
-        print(message)
-
-    @staticmethod
-    def error(message):
-        _LinePrinter.finish()
-        print(message)
+_reporter: ContextVar[Optional[Reporter]] = ContextVar("latextrans_reporter", default=None)
 
 
-_backend = _CliProgress()
+@contextmanager
+def use_reporter(reporter: Reporter):
+    token = _reporter.set(reporter)
+    try:
+        yield
+    finally:
+        _reporter.reset(token)
 
 
-class _ProgressProxy:
-    def __getattr__(self, name):
-        return getattr(_backend, name)
+def _current_reporter() -> Reporter:
+    reporter = _reporter.get()
+    if reporter is None:
+        reporter = CliReporter()
+        _reporter.set(reporter)
+    return reporter
 
 
-def set_progress_backend(backend):
-    global _backend
-    _backend = backend
+def log_message(message: str) -> None:
+    _current_reporter().log(str(message))
 
 
-def get_progress_backend():
-    return _backend
-
-
-st = _ProgressProxy()
+def report_progress(percent: int, message: str) -> None:
+    _current_reporter().progress(max(0, min(100, percent)), message)

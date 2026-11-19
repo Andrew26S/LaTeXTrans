@@ -7,6 +7,7 @@ import asyncio
 base_dir = os.getcwd()
 sys.path.append(base_dir)
 
+from src.utils.progress import log_message
 from .tool_agents.base_tool_agent import BaseToolAgent
 from .tool_agents.parser_agent import ParserAgent
 from .tool_agents.translator_agent import TranslatorAgent 
@@ -98,7 +99,7 @@ class CoordinatorAgent:
         os.replace(generated_pdf, final_pdf)
         if self.compile_attempts:
             self.compile_attempts[-1]["pdf_path"] = final_pdf
-        print(f"🤖🎉 {self.name}: Successfully translated {base_name} to {final_pdf}.")
+        log_message(f"🤖🎉 {self.name}: Successfully translated {base_name} to {final_pdf}.")
         return final_pdf
 
 

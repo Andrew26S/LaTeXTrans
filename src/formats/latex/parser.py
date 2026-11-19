@@ -1,9 +1,8 @@
 from typing import Any, Dict, Optional
 from .utils import *
 import tiktoken
-import sys
 
-from src.utils.progress import st
+from src.utils.progress import log_message, report_progress
 
 
 class LatexParser:
@@ -22,29 +21,22 @@ class LatexParser:
         """
         Parse the LaTeX document and return the parsed content.
         """
-        sys.stderr = open(os.devnull, 'w')
-        process_b = st.empty()
-        with process_b:
-            process_bar = st.progress(0, text="Parsing LaTeX document...")
-        sys.stderr = sys.__stderr__
+
+        report_progress(0, "Parsing LaTeX document...")
 
         main_tex_file = find_main_tex_file(self.dir) 
         if not main_tex_file:
-            print("⚠️ Warning: There is no main tex file to compile in this directory.")
+            log_message("⚠️ Warning: There is no main tex file to compile in this directory.")
             return None
 
-        sys.stderr = open(os.devnull, 'w')
-        process_bar.progress(10, text="Finding main tex file...")
-        sys.stderr = sys.__stderr__
+        report_progress(10, "Finding main tex file...")
 
         main_tex = read_tex_file(main_tex_file)
         if not main_tex:
-            print("⚠️ Warning: The main tex file is empty.")
+            log_message("⚠️ Warning: The main tex file is empty.")
             return None
-        
-        sys.stderr = open(os.devnull, 'w')
-        process_bar.progress(20,text="Reading main tex file...")
-        sys.stderr = sys.__stderr__
+
+        report_progress(20, "Reading main tex file...")
 
         main_tex = remove_comments(main_tex)
         full_tex = self._merge_inputs(main_tex)
@@ -57,16 +49,13 @@ class LatexParser:
         self._merge_short_sections(min_tokens=50)  # Merge short sections to avoid too many sections
 
         total_sections = len(self.sections_json)
-        sys.stderr = open(os.devnull, 'w')
-        process_bar.progress(80)
-        sys.stderr = sys.__stderr__
+
+        report_progress(80, "Parsing sections...")
 
         for i,section in enumerate(self.sections_json):
 
-            sys.stderr = open(os.devnull, 'w')
             process_text = f"Processing chapter：{i+1}/{total_sections}"
-            process_bar.progress(80 + int(15 * (i/total_sections)), text=process_text)
-            sys.stderr = sys.__stderr__
+            report_progress(80 + int(15 * (i/total_sections)), process_text)
 
             if section["section"] == "0" or section["section"] == "-1":
                 section_content = self._extract_captions(section["content"])
@@ -78,11 +67,7 @@ class LatexParser:
                 section_content = self._extract_captions(section["content"])
                 self.sections_json[i]["content"] = self._extract_envs(section_content)
 
-        sys.stderr = open(os.devnull, 'w')
-        process_bar.progress(100, text="Finish Parse Sections")
-        st.success("Finish Parse Sections")
-        process_b.empty()
-        sys.stderr = sys.__stderr__
+        report_progress(100, "Finish Parse Sections")
 
     # def parse_no_env_cap_ph(self):
     #     """
@@ -126,7 +111,7 @@ class LatexParser:
             elif os.path.exists(f'{inputfilepath}.tex'):
                 inputfilepath = f'{inputfilepath}.tex'
             else:
-                print(f"⚠️ Warning: File not found: {inputfilepath}.tex or {inputfilepath}")
+                log_message(f"⚠️ Warning: File not found: {inputfilepath}.tex or {inputfilepath}")
                 pos = result.end()  # Skip this input and continue
                 continue
 
@@ -278,7 +263,7 @@ class LatexParser:
         first_section_match = pattern_section.search(document)
 
         if not first_section_match: # no section found
-            print("There is no section in the full tex.")
+            log_message("There is no section in the full tex.")
             self.sections_json.append({
                 "section": "0",
                 "content": document,
@@ -382,7 +367,7 @@ class LatexParser:
             if total_tokens < min_tokens and len(merged_sections) > num_fixed:
                 merged_sections[-1]["content"] += "\n" + combined_content
                 merged_sections[-1]["section"] += "+" + "+".join(combined_section_ids)
-                print(merged_sections[-1]["section"])
+                log_message(merged_sections[-1]["section"])
             else:
                 merged_section = start_section.copy()
                 merged_section["content"] = combined_content

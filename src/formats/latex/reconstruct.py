@@ -1,6 +1,7 @@
 from typing import List, Dict, Any
 import os
 import re
+from src.utils.progress import log_message
 from .utils import *
 
 class LatexConstructor:
@@ -135,11 +136,11 @@ class LatexConstructor:
 
         if stack:
             unclosed_tags = [tag for tag, _ in stack]
-            print(f"⚠️ Warning: Unclosed begin placeholder(s) found and skipped: {unclosed_tags}")
+            log_message(f"⚠️ Warning: Unclosed begin placeholder(s) found and skipped: {unclosed_tags}")
         
         residual_matches = re.findall(r"<PLACEHOLDER_[^>]*>", tex)
         if residual_matches:
-            print(f"⚠️ Warning: Residual placeholders found and removed: {residual_matches}")
+            log_message(f"⚠️ Warning: Residual placeholders found and removed: {residual_matches}")
             tex = re.sub(r"<PLACEHOLDER_[^>]*>", "", tex)
 
         tex = add_ctex_package(tex) # zh
@@ -150,7 +151,7 @@ class LatexConstructor:
             with open(main_file_path, "w", encoding="utf-8") as f:
                 f.write(tex)
         else:
-            print(f"⚠️ Warning: No main.tex file found in {self.output_latex_dir}, creating a new one.")
+            log_message(f"⚠️ Warning: No main.tex file found in {self.output_latex_dir}, creating a new one.")
             main_file_path = os.path.join(self.output_latex_dir, "main.tex")
             with open(main_file_path, "w", encoding="utf-8") as f:
                 f.write(tex)

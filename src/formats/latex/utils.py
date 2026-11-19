@@ -14,8 +14,7 @@ import requests
 from bs4 import BeautifulSoup
 from typing import List
 import time
-from src.utils.progress import st
-import sys
+from src.utils.progress import log_message, report_progress
 from pathlib import Path
 
 options = r"\[[^\[\]]*?\]"
@@ -79,7 +78,7 @@ def extract_compressed_files(folder_path):
                         extract_path = Path(root) / file.replace('.zip', '')
                         extract_path.mkdir(parents=True, exist_ok=True)
                         _safe_extract_zip(zip_ref, extract_path)
-                        print(f"Extracted {file} to {extract_path}")
+                        log_message(f"Extracted {file} to {extract_path}")
                     os.remove(file_path)
                 elif tarfile.is_tarfile(file_path):
                     with tarfile.open(file_path, 'r:*') as tar_ref:
@@ -87,13 +86,13 @@ def extract_compressed_files(folder_path):
                         extract_path = Path(root) / stem
                         extract_path.mkdir(parents=True, exist_ok=True)
                         _safe_extract_tar(tar_ref, extract_path)
-                        print(f"Extracted {file} to {extract_path}")
+                        log_message(f"Extracted {file} to {extract_path}")
                     os.remove(file_path)
                 elif file.lower().endswith((".tar.gz", ".tgz", ".tar", ".zip")):
                     raise ValueError("Unrecognized archive format.")
             except Exception as e:
                 failures[file_path] = str(e)
-                print(f"[SKIP] Failed to extract {file_path}: {e}")
+                log_message(f"[SKIP] Failed to extract {file_path}: {e}")
     return failures
 
 def get_profect_dirs(folder_path):
@@ -389,7 +388,7 @@ def get_texts_from_data(folder_path, output_folder):
     # print("projects:", projects)
     total_projects = len(projects)
     for idx, project in enumerate(projects, start=1):
-        print(f"[{idx}/{total_projects}] Processing {os.path.basename(project)}")
+        log_message(f"[{idx}/{total_projects}] Processing {os.path.basename(project)}")
         try:
             text = extract_pure_text(project)
             project_name = os.path.basename(project)
@@ -397,7 +396,7 @@ def get_texts_from_data(folder_path, output_folder):
             with open(output_file, "w", encoding="utf-8") as f:
                 f.write(text)
         except Exception as e:
-            print(f"Error processing project {project}: {e}")
+            log_message(f"Error processing project {project}: {e}")
             continue  # 跳过出错的项目
 
 def extract_pure_tags(dir):
@@ -791,7 +790,7 @@ def collect_latex_errors_with_logpath(folder: str):
                 content = f.read()
                 error_count = len(error_keyword.findall(content))
         except Exception as e:
-            print(f"Error reading {log_path}: {e}")
+            log_message(f"Error reading {log_path}: {e}")
             continue
 
         if error_count > 0:
@@ -806,8 +805,8 @@ def collect_latex_errors_with_logpath(folder: str):
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    print(f"Summary saved to: {output_path}")
-    print(f"🔍 共有 {error_project_count} 个项目存在 LaTeX Error。")
+    log_message(f"Summary saved to: {output_path}")
+    log_message(f"🔍 共有 {error_project_count} 个项目存在 LaTeX Error。")
 
 def get_tex_url(arxiv_id: str, headers: dict) -> str:
     """
@@ -847,10 +846,7 @@ def download_tex(arxiv_id: str, tex_url: str, save_dir: str, headers: dict):
             r.raise_for_status()
             total_size = int(r.headers.get("Content-Length", 0))
 
-            sys.stderr = open(os.devnull, 'w')
-            st_progress = st.progress(0)
-            status_text = st.empty()
-            sys.stderr = sys.__stderr__
+            report_progress(0, f"Downloading {arxiv_id}...")
 
             last_report_ts = 0.0
             with open(file_path, "wb") as f:
@@ -864,25 +860,22 @@ def download_tex(arxiv_id: str, tex_url: str, save_dir: str, headers: dict):
                         if total_size > 0:
                             now = time.time()
                             if now - last_report_ts >= 0.5 or downloaded == total_size:
-                                sys.stderr = open(os.devnull, 'w')
-                                progress = downloaded / total_size
-                                st_progress.progress(progress)
-                                status_text.text(
+
+                                report_progress(
+                                    int(100 * downloaded / total_size),
                                     f"Downloading {arxiv_id}: {downloaded/1024/1024:.2f}MB / {total_size/1024/1024:.2f}MB"
                                 )
-                                sys.stderr = sys.__stderr__
+
                                 last_report_ts = now
-            
-        sys.stderr = open(os.devnull, 'w')
-        st.success(f"[SUCCESS] {arxiv_id} successfully downloaded to {file_path}.")
-        sys.stderr = sys.__stderr__
+
+        log_message(f"[SUCCESS] {arxiv_id} successfully downloaded to {file_path}.")
 
         return os.path.join(save_dir, f"{arxiv_id}")
 
     except requests.RequestException as e:
-        sys.stderr = open(os.devnull, 'w')
-        st.error(f"[FAIL] {arxiv_id} download failed: {e}")
-        sys.stderr = sys.__stderr__
+
+        log_message(f"[FAIL] {arxiv_id} download failed: {e}")
+
         return None
 
 def batch_download_arxiv_tex(arxiv_ids: List[str], save_dir: str = "./tex_sources"):
@@ -894,7 +887,7 @@ def batch_download_arxiv_tex(arxiv_ids: List[str], save_dir: str = "./tex_source
     for arxiv_id in arxiv_ids:
         if is_already_downloaded(arxiv_id, save_dir):
             source_dirs.append(os.path.join(save_dir, arxiv_id))
-            print(f"[SkIP] Already downloaded: {arxiv_id}")
+            log_message(f"[SkIP] Already downloaded: {arxiv_id}")
             continue
 
         tex_url = get_tex_url(arxiv_id, headers)
@@ -903,9 +896,9 @@ def batch_download_arxiv_tex(arxiv_ids: List[str], save_dir: str = "./tex_source
             if dir:
                 source_dirs.append(dir)
             else:
-                print(f"[SKIP] Source download failed for {arxiv_id}, skip TeX processing.")
+                log_message(f"[SKIP] Source download failed for {arxiv_id}, skip TeX processing.")
         else:
-            print(f"[SKIP] No TeX source found for {arxiv_id}. Please check the arXiv ID or the availability of the source.")
+            log_message(f"[SKIP] No TeX source found for {arxiv_id}. Please check the arXiv ID or the availability of the source.")
 
             # 下载PDF文件
         pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
@@ -917,13 +910,12 @@ def batch_download_arxiv_tex(arxiv_ids: List[str], save_dir: str = "./tex_source
             response.raise_for_status()
             with open(pdf_path, 'wb') as f:
                 f.write(response.content)
-            sys.stderr = open(os.devnull, 'w')
-            st.success(f"[SUCCESS] Downloaded PDF for {arxiv_id}")
-            sys.stderr = sys.__stderr__
+
+            log_message(f"[SUCCESS] Downloaded PDF for {arxiv_id}")
+
         except Exception as e:
-            sys.stderr = open(os.devnull, 'w')
-            st.error(f"[ERROR] Failed to download PDF for {arxiv_id}: {str(e)}")
-            sys.stderr = sys.__stderr__
+
+            log_message(f"[ERROR] Failed to download PDF for {arxiv_id}: {str(e)}")
 
     return source_dirs
 
@@ -950,10 +942,10 @@ def get_arxiv_category(arxiv_ids: List[str]) -> dict:
                     categories.extend(matches)
 
             if not categories:
-                print(f"[WARNING] No categories found for {arxiv_id}")
+                log_message(f"[WARNING] No categories found for {arxiv_id}")
 
         except requests.RequestException as e:
-            print(f"[ERROR] Failed to fetch {arxiv_id}: {e}")
+            log_message(f"[ERROR] Failed to fetch {arxiv_id}: {e}")
             categories = []
 
         results[arxiv_id] = (categories)

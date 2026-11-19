@@ -11,10 +11,9 @@ import re
 import regex
 import asyncio
 import aiohttp
-import time
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from src.utils.progress import st
+from src.utils.progress import log_message, report_progress
 
 base_dir = os.getcwd()
 sys.path.append(base_dir)
@@ -70,13 +69,6 @@ class TranslatorAgent(BaseToolAgent):
         self.add_placeholder()
         self.build_term_dict()
 
-        sys.stderr = open(os.devnull, 'w')
-        process_b = st.empty()
-        with process_b:
-            process_bar = st.progress(0)
-        status_text = st.empty()
-        sys.stderr = sys.__stderr__
-
         sections = self.read_file(Path(self.output_dir, "sections_map.json"), "json")
         captions = self.read_file(Path(self.output_dir, "captions_map.json"), "json")
         envs = self.read_file(Path(self.output_dir, "envs_map.json"), "json")
@@ -86,10 +78,7 @@ class TranslatorAgent(BaseToolAgent):
         if self.trans_mode == 0 or self.trans_mode == 2:
             self.log(f"Starting translation for project: {os.path.basename(self.project_dir)}.")
 
-            sys.stderr = open(os.devnull, 'w')
-            status_text.text(f"Starting translation for project: {os.path.basename(self.project_dir)}.")
-            process_bar.progress(5)
-            sys.stderr = sys.__stderr__
+            report_progress(5, "Translating sections...")
 
             async with aiohttp.ClientSession() as session:
                 sem = asyncio.Semaphore(10)  # Considering the api response speed, processing one section approximately takes about 10 seconds, and initiating a call every half second, 
@@ -111,10 +100,8 @@ class TranslatorAgent(BaseToolAgent):
                     
                     completed += 1
 
-                    sys.stderr = open(os.devnull, 'w')
                     process = int(5 + 90 * completed / total_tasks)
-                    process_bar.progress(process, text=f"Translating sections: {completed}/{total_tasks}")
-                    sys.stderr = sys.__stderr__
+                    report_progress(process, f"Translating sections: {completed}/{total_tasks}")
 
                     # It can be considered to save and modify to integrate memory once for hard memory read and write, 
                     # and save each section once for the convenience of observing the translation situation.
@@ -122,10 +109,7 @@ class TranslatorAgent(BaseToolAgent):
                     self.save_file(Path(self.output_dir, "captions_map.json"), "json", captions)
                     self.save_file(Path(self.output_dir, "envs_map.json"), "json", envs)
 
-                sys.stderr = open(os.devnull, 'w')
-                status_text.text("Validating translation results...")
-                process_bar.progress(95)
-                sys.stderr = sys.__stderr__
+                report_progress(95, "Validating translation results...")
 
                 await self._val_fail_parts(Maxtry=Maxtry,
                                      sections=sections,
@@ -133,25 +117,19 @@ class TranslatorAgent(BaseToolAgent):
                                      envs=envs,
                                      session=session)
 
-                sys.stderr = open(os.devnull, 'w')
-                process_bar.progress(100)
-                status_text.empty()
-                process_b.empty()
-                sys.stderr = sys.__stderr__
-                self.log("Successfully translated sections.")
+                report_progress(100, "Translation finished.")
+
+                self.log("Translation finished.")
 
         elif self.trans_mode == 1:
 
-            sys.stderr = open(os.devnull, "w")
-            status_text = st.empty()
-            sys.stderr = sys.__stderr__
             async with aiohttp.ClientSession() as session:
                 error_parts = [error_part["num_or_ph"] for error_part in self.errors_report]
                 self.log(
                     f"Starting retranslation for error parts: {error_parts}, attempt {error_retry_count + 1}/{Maxtry}.")
-                sys.stderr = open(os.devnull, "w")
-                status_text.text(f"Starting retranslation for error parts: {error_parts}, attempt {error_retry_count + 1}/{Maxtry}.")
-                sys.stderr = sys.__stderr__
+
+                report_progress(0, "Retranslating error parts...")
+
                 await self._retranslate_error_parts(secs=sections,
                                                     caps=captions,
                                                     envs=envs,
@@ -172,11 +150,7 @@ class TranslatorAgent(BaseToolAgent):
                                            envs=envs,
                                            session=session)
 
-            sys.stderr = open(os.devnull, "w")
-            status_text.empty()
-            time.sleep(3)
-            sys.stderr = sys.__stderr__
-            self.log("Successfully retranslated error parts.")
+            self.log("Retranslation finished.")
 
     async def translate(self,
                         section: Dict[str, Any],
@@ -190,7 +164,6 @@ class TranslatorAgent(BaseToolAgent):
         placeholder_pattern_env = r"<PLACEHOLDER_ENV_\d+>"
         placeholders_cap = re.findall(placeholder_pattern_cap, section["content"])
         placeholders_env = re.findall(placeholder_pattern_env, section["content"])
-
 
         if(section["section"] == "-1" or section["section"] == "0"):
             section = section
@@ -216,37 +189,25 @@ class TranslatorAgent(BaseToolAgent):
 
         return section
     
-    async def _val_fail_parts(self, sections, captions, envs, Maxtry, session: aiohttp.ClientSession, fail_retry_count=0) -> str:
-            sys.stderr = open(os.devnull, 'w')
-            status_text = st.empty()
-            sys.stderr = sys.__stderr__
-            while fail_retry_count < Maxtry and self.have_fail_parts:
-                fail_parts = self.fail_section_nums + self.fail_caption_phs + self.fail_env_phs
-                if fail_retry_count == Maxtry:  #  retry 3 times
-                    print(f"Failed to translate: {fail_parts}")
-                    sys.stderr = open(os.devnull, "w")
-                    status_text.error(f"Failed to translate: {fail_parts}")
-                    st.error(f"Failed to translate: {fail_parts}")
-                    time.sleep(3)
-                    sys.stderr = sys.__stderr__
-                    break
-                self.log(f"Starting retranslation for failed parts: {fail_parts}, attempt {fail_retry_count+1}/{Maxtry}.")
-                sys.stderr = open(os.devnull, "w")
-                status_text.text(f"Starting retranslation for failed parts: {fail_parts}, attempt {fail_retry_count+1}/{Maxtry}.")
-                sys.stderr = sys.__stderr__
-                await self._retranslate_fail_parts(secs=sections,
-                                            caps=captions,
-                                            envs=envs,
-                                            session=session)
-                self.save_file(Path(self.output_dir, "sections_map.json"), "json", sections)
-                self.save_file(Path(self.output_dir, "captions_map.json"), "json", captions)
-                self.save_file(Path(self.output_dir, "envs_map.json"), "json", envs)
-                
-                fail_retry_count += 1
-                sys.stderr = open(os.devnull, 'w')
-                time.sleep(3)
-                status_text = st.empty()
-                sys.stderr = sys.__stderr__
+    async def _val_fail_parts(self, sections, captions, envs, Maxtry, session: aiohttp.ClientSession, fail_retry_count=0) -> None:
+
+        while fail_retry_count < Maxtry and self.have_fail_parts:
+            fail_parts = self.fail_section_nums + self.fail_caption_phs + self.fail_env_phs
+            self.log(f"Starting retranslation for failed parts: {fail_parts}, attempt {fail_retry_count+1}/{Maxtry}.")
+
+            report_progress(0, f"Retrying failed parts (attempt {fail_retry_count+1}/{Maxtry})...")
+
+            await self._retranslate_fail_parts(secs=sections, caps=captions, envs=envs, session=session)
+            self.save_file(Path(self.output_dir, "sections_map.json"), "json", sections)
+            self.save_file(Path(self.output_dir, "captions_map.json"), "json", captions)
+            self.save_file(Path(self.output_dir, "envs_map.json"), "json", envs)
+
+            fail_retry_count += 1
+            if self.have_fail_parts and fail_retry_count < Maxtry:
+                await asyncio.sleep(3)
+        if self.have_fail_parts:
+            remaining = self.fail_section_nums + self.fail_caption_phs + self.fail_env_phs
+            self.log(f"Failed to translate: {remaining}", level="error")
 
     async def _retranslate_fail_parts(self,
                                 secs: List[Dict[str, Any]], 
@@ -297,12 +258,6 @@ class TranslatorAgent(BaseToolAgent):
         async with aiohttp.ClientSession() as session:
             sem = asyncio.Semaphore(20)  
 
-            sys.stderr = open(os.devnull, 'w')
-            process_b = st.empty()
-            with process_b:
-                process_bar = process_b.progress(0)
-            status_text = st.empty()
-            sys.stderr = sys.__stderr__
             completed = 0
             async def process_ErrorPart(i, error_report):
                 async with sem:
@@ -376,20 +331,13 @@ class TranslatorAgent(BaseToolAgent):
             for future in asyncio.as_completed(tasks_ErrorPart):
                 result = await future
                 completed += 1
-                sys.stderr = open(os.devnull, 'w')
-                process_bar.progress(completed / total_error_tasks)
-                status_text.text(f"Retranslating error parts: {completed}/{total_error_tasks}")
-                sys.stderr = sys.__stderr__
-                
+
+                report_progress(int(100 * completed / total_error_tasks), f"Retranslating error parts: {completed}/{total_error_tasks}")
+
                 if result is not None:  
                     i = result
-            sys.stderr = open(os.devnull, 'w')
-            process_bar.progress(100)
-            status_text.text("Complete a retranslation once")
-            time.sleep(3)
-            process_b.empty()
-            status_text.empty()
-            sys.stderr = sys.__stderr__
+
+            report_progress(100, "Retranslation finished.")
 
     async def _translate_section(self, section: Dict[str, Any], session: aiohttp.ClientSession, error_message=None) -> Dict[str, Any]:
         
@@ -466,7 +414,6 @@ class TranslatorAgent(BaseToolAgent):
                                                         )
         elif self.trans_mode == 1:
             # Keep current retranslating path for captions.
-            print("translate_caption_mode_1")
             transed_caption["trans_content"] = await self._request_llm_for_retrans_error_parts(pm.retrans_error_parts_system_prompt,
                                                                                          part=transed_caption,
                                                                                          error_message=error_message,
@@ -670,7 +617,7 @@ class TranslatorAgent(BaseToolAgent):
             content = await self._post_chat(payload, session)
         except LLMRequestError as e:
             self._mark_fail_part(fail_part, type)
-            print(f"Failed to translate text, return original text: {fail_part}. {e}")
+            log_message(f"Failed to translate text, return original text: {fail_part}. {e}")
             return text
         return sanitize_llm_translation(text, content)
 
@@ -686,7 +633,7 @@ class TranslatorAgent(BaseToolAgent):
             content = await self._post_chat(payload, session)
         except LLMRequestError as e:
             self._mark_fail_part(fail_part, type)
-            print(f"Failed to translate text, return original text: {fail_part}. {e}")
+            log_message(f"Failed to translate text, return original text: {fail_part}. {e}")
             return text
         return sanitize_llm_translation(text, content)
 
@@ -705,7 +652,7 @@ class TranslatorAgent(BaseToolAgent):
             content = await self._post_chat(payload, session)
         except LLMRequestError as e:
             self._mark_fail_part(fail_part, type)
-            print(f"Failed to retranslate text, keep previous translation: {fail_part}. {e}")
+            log_message(f"Failed to retranslate text, keep previous translation: {fail_part}. {e}")
             return part["trans_content"]
         return sanitize_llm_translation(part["content"], content)
 
@@ -724,7 +671,7 @@ class TranslatorAgent(BaseToolAgent):
         try:
             return await self._post_chat(payload, session)
         except LLMRequestError as e:
-            print(f"Warning: failed to extract terms, set N/A. {e}")
+            log_message(f"Warning: failed to extract terms, set N/A. {e}")
             return "N/A"
 
     def _updated_term_dict(self, text: str) -> None:
@@ -800,14 +747,14 @@ class TranslatorAgent(BaseToolAgent):
                                          names=['English Term', 'Chinese Translation'])
                         self.term_dict.update(zip(df['English Term'], df['Chinese Translation']))
                     except FileNotFoundError as e:
-                        print(f"Error: Default terminology file not found: {e}")
+                        log_message(f"Error: Default terminology file not found: {e}")
             else:
                 try:
                     df = pd.read_csv('terms/default.csv', header=None,
                                      names=['English Term', 'Chinese Translation'])
                     self.term_dict.update(zip(df['English Term'], df['Chinese Translation']))
                 except FileNotFoundError as e:
-                    print(f"Error: Default terminology file not found: {e}")
+                    log_message(f"Error: Default terminology file not found: {e}")
 
     def add_placeholder(self):
 

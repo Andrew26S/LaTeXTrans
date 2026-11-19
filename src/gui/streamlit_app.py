@@ -1,6 +1,3 @@
-import io
-import re
-from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -9,7 +6,7 @@ import streamlit as streamlit_backend
 import toml
 
 from src.runtime import DEFAULT_LOCAL_CONFIG_PATH, run_translation, split_multivalue_text
-from src.utils.progress import get_progress_backend, set_progress_backend
+from src.utils.progress import use_reporter
 
 
 def _collect_result_pdfs(result: Dict[str, Any]) -> List[str]:
@@ -28,53 +25,20 @@ def _collect_result_pdfs(result: Dict[str, Any]) -> List[str]:
     return selected
 
 
-class StreamlitLogWriter(io.TextIOBase):
-    def __init__(self, placeholder, state: Dict[str, Any]):
-        self.placeholder = placeholder
-        self.state = state
+class StreamlitReporter:
+    def __init__(self, log_placeholder, stage_bar, stage_text, logs):
+        self.log_placeholder = log_placeholder
+        self.stage_bar = stage_bar
+        self.stage_text = stage_text
+        self.logs = logs
 
-    def write(self, data: str) -> int:
-        if not data:
-            return 0
+    def log(self, message: str) -> None:
+        self.logs.extend(message.splitlines())
+        self.log_placeholder.code("\n".join(self.logs[-300:]), language="text")
 
-        self.state["raw_buffer"] += data
-        normalized = self.state["raw_buffer"].replace("\r", "\n")
-        lines = normalized.split("\n")
-        self.state["raw_buffer"] = lines.pop() if normalized and not normalized.endswith("\n") else ""
-
-        for line in lines:
-            text = line.strip()
-            if not text:
-                continue
-            self.state["logs"].append(text)
-            self._update_state_from_line(text)
-
-        self.placeholder.code("\n".join(self.state["logs"][-300:]), language="text")
-        return len(data)
-
-    def flush(self) -> None:
-        return None
-
-    def _update_state_from_line(self, line: str) -> None:
-        project_match = re.search(r"\[(\d+)/(\d+)\]\s+Processing\s+(.+)", line)
-        if project_match:
-            current = int(project_match.group(1))
-            total = int(project_match.group(2))
-            name = project_match.group(3).strip()
-            self.state["project_text"].markdown(f"**Project** `{current}/{total}`  `{name}`")
-            if total > 0:
-                self.state["overall_bar"].progress((current - 1) / total)
-            return
-
-        progress_match = re.search(r"(\d+(?:\.\d+)?)%", line)
-        if progress_match:
-            percent = min(100.0, max(0.0, float(progress_match.group(1))))
-            self.state["stage_bar"].progress(percent / 100.0)
-            self.state["stage_text"].markdown(f"**Stage** {line}")
-            return
-
-        if line.startswith("[") or "Error processing project" in line or "Successfully" in line:
-            self.state["stage_text"].markdown(f"**Stage** {line}")
+    def progress(self, percent: int, message: str) -> None:
+        self.stage_bar.progress(percent)
+        self.stage_text.text(message)
 
 
 def _load_defaults(config_path: str) -> Dict[str, Any]:
@@ -362,34 +326,21 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], tit
     log_placeholder = streamlit_backend.empty()
     results_placeholder = streamlit_backend.empty()
 
-    state = {
-        "logs": [],
-        "raw_buffer": "",
-        "project_text": project_text,
-        "stage_text": stage_text,
-        "overall_bar": overall_bar,
-        "stage_bar": stage_bar,
-        "completed_projects": 0,
-        "total_projects": 0,
-    }
-    streamlit_backend.session_state.current_run_logs = state["logs"]
+    logs = []
+    streamlit_backend.session_state.current_run_logs = logs
+    reporter = StreamlitReporter(log_placeholder, stage_bar, stage_text, logs)
 
     def on_event(event: Dict[str, Any]) -> None:
+        index, total = event["index"], event["total"]
+        stats_placeholder.metric("Projects", f"{index}/{total}")
+        project_text.markdown(f"**Project** `{index}/{total}`  `{event['project_name']}`")
         if event["type"] == "project_start":
-            state["total_projects"] = event["total"]
-            stats_placeholder.metric("Projects", f"{event['index']}/{event['total']}")
-            project_text.markdown(f"**Project** `{event['index']}/{event['total']}`  `{event['project_name']}`")
-            if event["total"] > 0:
-                overall_bar.progress((event["index"] - 1) / event["total"])
-        elif event["type"] == "project_complete":
-            state["completed_projects"] = event["index"]
-            stats_placeholder.metric("Projects", f"{event['index']}/{event['total']}")
-            if event["total"] > 0:
-                overall_bar.progress(event["index"] / event["total"])
-        elif event["type"] == "project_error":
-            stats_placeholder.metric("Projects", f"{event['index']}/{event['total']}")
-            overall_bar.progress(event["index"] / event["total"])
-            stage_text.markdown(f"**Stage** Error in `{event['project_name']}`: {event['error']}")
+            overall_bar.progress((index - 1) / total)
+            reporter.progress(0, "Starting project...")
+        else:
+            overall_bar.progress(index / total)
+            if event["type"] == "project_error":
+                stage_text.text(f"Error in {event['project_name']}: {event['error']}")
 
     overrides = {
         "paper_list": inputs["paper_list"],
@@ -406,12 +357,8 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], tit
         "update_term": params["update_term"],
     }
 
-    writer = StreamlitLogWriter(log_placeholder, state)
-    previous_backend = get_progress_backend()
-    set_progress_backend(streamlit_backend)
-
     try:
-        with redirect_stdout(writer), redirect_stderr(writer):
+        with use_reporter(reporter):
             result = run_translation(
                 config_path=params["config_path"],
                 overrides=overrides,
@@ -420,12 +367,10 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], tit
                 event_callback=on_event,
             )
     except Exception as exc:
+        reporter.log(f"Run failed: {exc}")
         stage_text.markdown(f"**Stage** Failed: {exc}")
         results_placeholder.error(f"Run failed: {exc}")
         return
-    finally:
-        writer.flush()
-        set_progress_backend(previous_backend)
 
     stage_bar.progress(1.0)
     stage_text.markdown("**Stage** Finished")

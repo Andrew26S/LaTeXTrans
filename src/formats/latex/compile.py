@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from typing import Literal, Optional, TypedDict
 
+from src.utils.progress import log_message
 from .utils import find_main_tex_file
 
 
@@ -62,9 +63,9 @@ def run_latexmk(engine: str, tex_file: Path, output_dir: Path, *, publish=False)
             source = Path(pdf)
             pdf = str(source.replace(output_dir / source.name))
     exit_detail = "could not start latexmk" if exit_code is None else f"latexmk exit {exit_code}"
-    print(f"{engine}: {status} ({exit_detail}), log: {log}")
+    log_message(f"{engine}: {status} ({exit_detail}), log: {log}")
     if pdf:
-        print(f"PDF: {pdf}")
+        log_message(f"PDF: {pdf}")
     return CompileAttempt(engine=engine, exit_code=exit_code, status=status, pdf_path=pdf, log_path=str(log))
 
 
@@ -89,7 +90,7 @@ class LaTexCompiler:
             marker.unlink()
         main_file = find_main_tex_file(self.output_latex_dir)
         if not main_file:
-            print("No main TeX file found.")
+            log_message("No main TeX file found.")
             return None
         tex_file = Path(main_file).resolve()
         parent = Path(output_dir or self.output_latex_dir).resolve()
