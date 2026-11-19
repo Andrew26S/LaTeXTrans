@@ -8,10 +8,8 @@ from typing import Any, Dict, List
 import streamlit as streamlit_backend
 import toml
 
-from src.runtime import run_translation, split_multivalue_text
+from src.runtime import DEFAULT_LOCAL_CONFIG_PATH, run_translation, split_multivalue_text
 from src.utils.progress import get_progress_backend, set_progress_backend
-
-DEFAULT_CONFIG_PATH = "config/local.toml"
 
 
 def _collect_result_pdfs(result: Dict[str, Any]) -> List[str]:
@@ -140,7 +138,7 @@ def _inject_style() -> None:
 def _sidebar_form(defaults: Dict[str, Any]) -> Dict[str, Any]:
     llm_defaults = defaults.get("llm_config", {})
     streamlit_backend.sidebar.header("Run Configuration")
-    config_path = streamlit_backend.sidebar.text_input("Config Path", DEFAULT_CONFIG_PATH)
+    config_path = streamlit_backend.sidebar.text_input("Config Path", DEFAULT_LOCAL_CONFIG_PATH)
     source_language = streamlit_backend.sidebar.text_input("Source Language", defaults.get("source_language", "en"))
     target_language = streamlit_backend.sidebar.text_input("Target Language", defaults.get("target_language", "ch"))
     model = streamlit_backend.sidebar.text_input("Model", llm_defaults.get("model", ""))
@@ -436,7 +434,7 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    defaults = _load_defaults(DEFAULT_CONFIG_PATH)
+    defaults = _load_defaults(DEFAULT_LOCAL_CONFIG_PATH)
     params = _sidebar_form(defaults)
     inputs = _collect_inputs()
 

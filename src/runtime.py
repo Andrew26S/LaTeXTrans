@@ -16,6 +16,7 @@ from src.formats.latex.utils import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_LOCAL_CONFIG_PATH = "config/local.toml"
 ProjectEventCallback = Callable[[Dict[str, Any]], None]
 
 
