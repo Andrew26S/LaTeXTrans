@@ -2,6 +2,7 @@ from typing import List, Dict, Any
 import os
 import re
 from src.utils.progress import log_message
+from .legacy_fonts import add_legacy_font_hooks
 from .utils import *
 
 class LatexConstructor:
@@ -144,6 +145,7 @@ class LatexConstructor:
             tex = re.sub(r"<PLACEHOLDER_[^>]*>", "", tex)
 
         tex = add_ctex_package(tex) # zh
+        tex = add_legacy_font_hooks(tex)
         # tex = add_ja_package(tex)  # ja
 
         main_file_path = find_main_tex_file(self.output_latex_dir)

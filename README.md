@@ -72,6 +72,8 @@ sudo apt install latexmk texlive-xetex texlive-latex-recommended texlive-lang-ch
 sudo apt install texlive-fonts-recommended fonts-noto-cjk fonts-noto-cjk-extra
 ```
 
+Translations compile with XeLaTeX. When a template uses the default Latin text fonts from `times`, `mathptmx`, `helvet`, or `courier`, the translated document selects their TeX Gyre counterparts so bold text and table entries retain their weight. The paper's explicit font selections take precedence.
+
 Add the following groups as your paper templates require them. If disk space is limited, install only the packages your paper needs.
 
 ```bash
