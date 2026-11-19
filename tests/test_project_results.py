@@ -67,6 +67,8 @@ class ProjectResultTests(unittest.TestCase):
 
             with patch("src.formats.latex.compile.subprocess.run", side_effect=build_figure):
                 self.assertIsNone(compiler.compile())
+            self.assertEqual([a["status"] for a in compiler.attempts], ["failed", "failed"])
+            self.assertTrue(all(a["pdf_path"] is None for a in compiler.attempts))
 
     def test_failed_pdf_is_rejected_and_fallback_uses_reported_jobname(self):
         with tempfile.TemporaryDirectory(prefix="paper with spaces ") as directory:
@@ -84,3 +86,55 @@ class ProjectResultTests(unittest.TestCase):
 
             with patch("src.formats.latex.compile.subprocess.run", side_effect=run_engine):
                 self.assertEqual(compiler.compile(), str(root / "build_xelatex" / "custom job.pdf"))
+            self.assertEqual([(a["status"], a["exit_code"]) for a in compiler.attempts], [
+                ("pdf_with_errors", 12), ("success", 0),
+            ])
+            for attempt in compiler.attempts:
+                self.assertTrue(Path(attempt["log_path"]).is_file())
+                self.assertTrue(Path(attempt["pdf_path"]).is_file())
+
+    def test_partial_pdf_is_reported_on_failure_even_if_fallback_produces_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "paper"
+            partial = root / "partial.pdf"
+            partial.write_bytes(b"partial")
+            attempts = [
+                dict(engine="pdflatex", exit_code=12, status="pdf_with_errors",
+                     pdf_path=str(partial), log_path=str(root / "first.log")),
+                dict(engine="xelatex", exit_code=12, status="failed",
+                     pdf_path=None, log_path=str(root / "second.log")),
+            ]
+            with (
+                patch.object(coordinator_agent, "ParserAgent"),
+                patch.object(coordinator_agent, "TranslatorAgent") as translator,
+                patch.object(coordinator_agent, "ValidatorAgent") as validator,
+                patch.object(coordinator_agent, "GeneratorAgent") as generator,
+            ):
+                translator.return_value.execute = AsyncMock()
+                validator.return_value.execute.return_value = []
+                generator.return_value.execute.return_value = None
+                generator.return_value.compile_attempts = attempts
+                events = []
+                result = run_projects({}, [str(project)], str(root), events.append)
+
+            self.assertFalse(result["completed_projects"])
+            failure, = result["failed_projects"]
+            self.assertEqual(failure["compilation_status"], "pdf_with_errors")
+            self.assertEqual(failure["compile_attempts"], attempts)
+            self.assertEqual(events[-1], {"type": "project_error", **failure})
+            self.assertFalse((root / "ch_paper" / "ch_paper.pdf").exists())
+
+    def test_missing_latexmk_records_diagnostic_and_clears_previous_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "main.tex").write_text(r"\documentclass{article}")
+            marker = root / "success.txt"
+            marker.write_text("Compilation successful\n")
+            compiler = LaTexCompiler(directory)
+            with patch("src.formats.latex.compile.subprocess.run", side_effect=FileNotFoundError("missing latexmk")):
+                self.assertIsNone(compiler.compile_ja())
+            attempt, = compiler.attempts
+            self.assertEqual((attempt["engine"], attempt["status"], attempt["exit_code"]), ("lualatex", "failed", None))
+            self.assertIn("missing latexmk", Path(attempt["log_path"]).read_text())
+            self.assertFalse(marker.exists())

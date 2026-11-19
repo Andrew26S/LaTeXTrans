@@ -9,7 +9,6 @@ import json
 import zipfile
 import tarfile
 import regex
-import subprocess
 import os
 import requests
 from bs4 import BeautifulSoup
@@ -751,24 +750,10 @@ def save_to_json(data, output_file):
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 def compile_with_latexmk(tex_file: str, out_dir: str = "out", engine: str = "pdflatex"):
-    os.makedirs(out_dir, exist_ok=True)
-    
-    cmd = [
-        "latexmk",
-        f"-{engine}",                # 
-        "-interaction=nonstopmode",   # 
-        f"-outdir={out_dir}",          # 
-        f"-synctex=1",
-        f"-f",                 # 
-        tex_file
-    ]
-    
-    try:
-        subprocess.run(cmd, check=True)
-        print("✅ 编译成功！")
-    except subprocess.CalledProcessError as e:
-        print("❌ 编译失败！")
-        print(e)
+    from .compile import run_latexmk
+
+    run_latexmk(engine, Path(tex_file).resolve(), Path(out_dir).resolve(), publish=True)
+
 
 def collect_latex_errors_with_logpath(folder: str):
     """

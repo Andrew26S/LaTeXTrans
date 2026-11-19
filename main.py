@@ -43,6 +43,12 @@ def main() -> int:
     )
     failed = len(result["failed_projects"])
     print(f"Completed {len(result['completed_projects'])} project(s), failed {failed}.")
+    for project in result["failed_projects"]:
+        if project.get("compilation_status") == "pdf_with_errors":
+            print(f"PDFs with compilation errors for {project['project_name']}:")
+            for attempt in project["compile_attempts"]:
+                if attempt["status"] == "pdf_with_errors":
+                    print(f"  {attempt['engine']}: {attempt['pdf_path']} (log: {attempt['log_path']})")
     return 1 if failed else 0
 
 

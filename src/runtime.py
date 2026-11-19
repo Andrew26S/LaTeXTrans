@@ -252,68 +252,33 @@ def run_projects(
     for idx, project_dir in enumerate(projects, start=len(preparation_failures) + 1):
         project_name = os.path.basename(project_dir)
         print(f"[{idx}/{total_projects}] Processing {project_name}")
+        project = {
+            "index": idx, "total": total_projects, "project_name": project_name, "project_dir": project_dir,
+        }
         if event_callback:
-            event_callback(
-                {
-                    "type": "project_start",
-                    "index": idx,
-                    "total": total_projects,
-                    "project_name": project_name,
-                    "project_dir": project_dir,
-                }
-            )
-
+            event_callback({"type": "project_start", **project})
+        coordinator = None
         try:
-            latex_trans = CoordinatorAgent(
-                config=config,
-                project_dir=project_dir,
-                output_dir=output_dir,
-            )
-            pdf_path = latex_trans.workflow_latextrans()
+            coordinator = CoordinatorAgent(config=config, project_dir=project_dir, output_dir=output_dir)
+            project["pdf_path"] = coordinator.workflow_latextrans()
         except Exception as e:
             print(f"Error processing project {project_name}: {e}")
-            failed_projects.append(
-                {
-                    "index": idx,
-                    "total": total_projects,
-                    "project_name": project_name,
-                    "project_dir": project_dir,
-                    "error": str(e),
-                }
-            )
-            if event_callback:
-                event_callback(
-                    {
-                        "type": "project_error",
-                        "index": idx,
-                        "total": total_projects,
-                        "project_name": project_name,
-                        "project_dir": project_dir,
-                        "error": str(e),
-                    }
-                )
-            continue
+            project["error"] = str(e)
+            failed_projects.append(project)
+            event_type = "project_error"
+        else:
+            completed_projects.append(project)
+            event_type = "project_complete"
 
-        completed_projects.append(
-            {
-                "index": idx,
-                "total": total_projects,
-                "project_name": project_name,
-                "project_dir": project_dir,
-                "pdf_path": pdf_path,
-            }
-        )
+        attempts = list(coordinator.compile_attempts) if coordinator is not None else []
+        if attempts:
+            project["compile_attempts"] = attempts
+            status = attempts[-1]["status"]
+            if status == "failed" and any(a["status"] == "pdf_with_errors" for a in attempts):
+                status = "pdf_with_errors"
+            project["compilation_status"] = status
         if event_callback:
-            event_callback(
-                {
-                    "type": "project_complete",
-                    "index": idx,
-                    "total": total_projects,
-                    "project_name": project_name,
-                    "project_dir": project_dir,
-                    "pdf_path": pdf_path,
-                }
-            )
+            event_callback({"type": event_type, **project})
     return {
         "completed_projects": completed_projects,
         "failed_projects": failed_projects,

@@ -235,6 +235,26 @@ def _queue_retry(params, inputs, title):
     }
 
 
+def _show_compile_attempts(projects, *, downloads=False):
+    for project in projects:
+        attempts = project.get("compile_attempts", [])
+        if not attempts:
+            continue
+        streamlit_backend.text(project["project_name"])
+        streamlit_backend.table(attempts)
+        if downloads:
+            for attempt in attempts:
+                if attempt["status"] == "pdf_with_errors":
+                    pdf = Path(attempt["pdf_path"])
+                    try:
+                        streamlit_backend.download_button(
+                            f"Download PDF with errors ({attempt['engine']})", data=pdf.read_bytes(),
+                            file_name=pdf.name, mime="application/pdf", key=f"partial-{project['index']}-{pdf}",
+                        )
+                    except OSError:
+                        streamlit_backend.warning(f"Could not read {pdf}")
+
+
 def _render_result_files(result: Dict[str, Any], params: Dict[str, Any], inputs: Dict[str, List[str]]) -> None:
     output_dir = Path(result["output_dir"])
     completed = result["completed_projects"]
@@ -245,7 +265,7 @@ def _render_result_files(result: Dict[str, Any], params: Dict[str, Any], inputs:
     stat_a, stat_b, stat_c = streamlit_backend.columns(3)
     stat_a.metric("Completed", str(len(completed)))
     stat_b.metric("Failed", str(len(failed)))
-    stat_c.metric("PDF Files", str(len(pdfs)))
+    stat_c.metric("PDFs from completed projects", str(len(pdfs)))
 
     streamlit_backend.code(str(output_dir), language="text")
     streamlit_backend.caption("Output directory. Use it directly in File Explorer or your terminal.")
@@ -267,7 +287,12 @@ def _render_result_files(result: Dict[str, Any], params: Dict[str, Any], inputs:
                 except OSError:
                     streamlit_backend.warning(f"Could not read {pdf_path}")
     else:
-        streamlit_backend.info("This run produced no PDF files.")
+        streamlit_backend.info("No projects produced a successfully compiled PDF.")
+
+    projects = completed + failed
+    if any(project.get("compile_attempts") for project in projects):
+        with streamlit_backend.expander("Compilation details", expanded=bool(failed)):
+            _show_compile_attempts(projects, downloads=True)
 
     if failed:
         for project in failed:
@@ -308,6 +333,7 @@ def _render_history() -> None:
                 for pdf in item["pdfs"]:
                     streamlit_backend.code(pdf, language="text")
 
+            _show_compile_attempts(item["completed_projects"] + item["failed_projects"])
             if item["failed_projects"]:
                 retry_inputs = _retry_inputs(item["failed_projects"])
                 streamlit_backend.write("Failed Projects")

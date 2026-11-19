@@ -22,6 +22,7 @@ class GeneratorAgent(BaseToolAgent):
         self.config = config
         self.project_dir = project_dir
         self.output_dir = output_dir  # Output directory for parsed files
+        self.compile_attempts = []
 
     def execute(self) -> Any:
         sys.stderr = open(os.devnull, 'w')
@@ -95,6 +96,7 @@ class GeneratorAgent(BaseToolAgent):
         sys.stderr = sys.__stderr__
 
         latex_compiler = LaTexCompiler(output_latex_dir=transed_latex_dir)
+        self.compile_attempts = latex_compiler.attempts
         pdf_file = latex_compiler.compile()
 
         sys.stderr = open(os.devnull, 'w')

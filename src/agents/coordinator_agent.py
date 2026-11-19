@@ -38,6 +38,7 @@ class CoordinatorAgent:
         self.output_dir = output_dir  # Output directory for parsed files
         self.loop = asyncio.new_event_loop()
         self.mode = config.get("mode", 0)
+        self.compile_attempts = []
 
     def run_async(self, coro):
         """
@@ -82,14 +83,21 @@ class CoordinatorAgent:
         generator_agent = GeneratorAgent(config=self.config,
                                          project_dir=self.project_dir,
                                          output_dir=transed_project_dir)
-        generated_pdf = generator_agent.execute()
+        try:
+            generated_pdf = generator_agent.execute()
+        finally:
+            self.compile_attempts = list(generator_agent.compile_attempts)
         if not generated_pdf:
+            if any(a["status"] == "pdf_with_errors" for a in self.compile_attempts):
+                raise RuntimeError("PDF produced with compilation errors. See the engine logs.")
             raise RuntimeError("Compilation produced no translated PDF.")
         if not os.path.isfile(generated_pdf) or os.path.getsize(generated_pdf) == 0:
             raise RuntimeError(f"Generated PDF is missing or empty: {generated_pdf}")
 
         final_pdf = os.path.join(transed_project_dir, f"{self.target_language}_{base_name}.pdf")
         os.replace(generated_pdf, final_pdf)
+        if self.compile_attempts:
+            self.compile_attempts[-1]["pdf_path"] = final_pdf
         print(f"🤖🎉 {self.name}: Successfully translated {base_name} to {final_pdf}.")
         return final_pdf
 
