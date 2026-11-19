@@ -54,7 +54,7 @@ class ProjectResultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "main.tex").write_text(r"\documentclass{article}")
-            previous = root / "build_pdflatex"
+            previous = root / "build_xelatex"
             previous.mkdir()
             (previous / "main.pdf").write_bytes(b"old build")
             compiler = LaTexCompiler(directory)
@@ -68,10 +68,10 @@ class ProjectResultTests(unittest.TestCase):
 
             with patch("src.formats.latex.compile.subprocess.run", side_effect=build_figure):
                 self.assertIsNone(compiler.compile())
-            self.assertEqual([a["status"] for a in compiler.attempts], ["failed", "failed"])
+            self.assertEqual([(a["engine"], a["status"]) for a in compiler.attempts], [("xelatex", "failed")])
             self.assertTrue(all(a["pdf_path"] is None for a in compiler.attempts))
 
-    def test_failed_pdf_is_rejected_and_fallback_uses_reported_jobname(self):
+    def test_source_compile_rejects_failed_pdf_and_fallback_uses_reported_jobname(self):
         with tempfile.TemporaryDirectory(prefix="paper with spaces ") as directory:
             root = Path(directory)
             (root / "main.tex").write_text(r"\documentclass{article}")
@@ -86,7 +86,7 @@ class ProjectResultTests(unittest.TestCase):
                 return CompletedProcess(cmd, 12 if "-pdflatex" in cmd else 0)
 
             with patch("src.formats.latex.compile.subprocess.run", side_effect=run_engine):
-                self.assertEqual(compiler.compile(), str(root / "build_xelatex" / "custom job.pdf"))
+                self.assertEqual(compiler.compile_source(root), str(root / "custom job.pdf"))
             self.assertEqual([(a["status"], a["exit_code"]) for a in compiler.attempts], [
                 ("pdf_with_errors", 12), ("success", 0),
             ])
@@ -235,7 +235,7 @@ class ProjectResultTests(unittest.TestCase):
                 retry = run_projects({}, projects[:1], str(root / "outputs"), confirm_replace=lambda pdf: True)
 
             attempts = first["failed_projects"][0]["compile_attempts"]
-            self.assertEqual(len(attempts), 2)
+            self.assertEqual([attempt["engine"] for attempt in attempts], ["xelatex"])
             for attempt in attempts:
                 self.assertTrue(Path(attempt["pdf_path"]).read_bytes().endswith(b"broken"))
                 self.assertTrue(Path(attempt["log_path"]).read_bytes().endswith(b"broken"))

@@ -85,7 +85,7 @@ class LaTexCompiler:
         self.attempts: list[CompileAttempt] = []
 
     def compile(self):
-        return self._compile(("pdflatex", "xelatex"))
+        return self._compile(("xelatex",))
 
     def compile_ja(self):
         return self._compile(("lualatex",))
