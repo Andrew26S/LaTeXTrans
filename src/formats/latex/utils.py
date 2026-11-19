@@ -7,6 +7,8 @@ import os
 import re
 import json
 import gzip
+import zlib
+import lzma
 import zipfile
 import tarfile
 import tempfile
@@ -62,15 +64,26 @@ def get_pattern_command_full(name, n=None):
         pattern += r'(?=[^a-zA-Z])'
     return pattern
 
+ARCHIVE_SUFFIXES = (".tar.gz", ".tar.xz", ".tar.bz2", ".tgz", ".txz", ".tbz2", ".tbz", ".tar", ".zip")
+
+
+def archive_stem(path: Path) -> str:
+    for suffix in ARCHIVE_SUFFIXES:
+        if path.name.lower().endswith(suffix):
+            return path.name[:-len(suffix)]
+    return ""
+
+
 def extract_archive(archive: Path, destination: Path) -> None:
-    if zipfile.is_zipfile(archive):
-        with zipfile.ZipFile(archive) as source:
-            _safe_extract_zip(source, destination)
-    elif tarfile.is_tarfile(archive):
-        with tarfile.open(archive, "r:*") as source:
-            _safe_extract_tar(source, destination)
-    else:
-        raise ValueError(f"Unrecognized archive format: {archive}")
+    with archive.open("rb") as stream:
+        is_zip = zipfile.is_zipfile(stream)
+        stream.seek(0)
+        if is_zip:
+            with zipfile.ZipFile(stream) as source:
+                _safe_extract_zip(source, destination)
+        else:
+            with tarfile.open(fileobj=stream, mode="r:*") as source:
+                _safe_extract_tar(source, destination)
 
 
 class InvalidSourceArchive(ValueError):
@@ -84,7 +97,7 @@ def _unpack_cached_archive(archive: Path, target: Path, *, require_tex=False) ->
         staged.mkdir()
         try:
             extract_archive(archive, staged)
-        except (ValueError, zipfile.BadZipFile, tarfile.TarError, EOFError, gzip.BadGzipFile) as exc:
+        except (ValueError, zipfile.BadZipFile, tarfile.TarError, EOFError, gzip.BadGzipFile, zlib.error, lzma.LZMAError) as exc:
             raise InvalidSourceArchive(str(exc)) from exc
         if require_tex and not any(path.is_file() for path in staged.rglob("*.tex")):
             raise InvalidSourceArchive("Archive contains no TeX source.")
@@ -106,11 +119,11 @@ def extract_compressed_files(folder_path):
         directories[:] = [d for d in directories if not d.startswith(".latextrans-")]
         for file in files:
             archive = Path(root, file)
-            suffix = next((s for s in (".tar.gz", ".zip", ".tar", ".tgz") if file.lower().endswith(s)), None)
-            if not suffix:
+            stem = archive_stem(archive)
+            if not stem:
                 continue
             try:
-                target = archive.with_name(file[:-len(suffix)])
+                target = archive.with_name(stem)
                 _unpack_cached_archive(archive, target)
                 log_message(f"Extracted {archive} to {target}")
             except Exception as exc:
@@ -435,6 +448,7 @@ def extract_pure_tags(dir):
 def loop_files(dir):
     all_files = []
     for root, dirs, files in os.walk(dir):
+        dirs[:] = [name for name in dirs if not name.startswith(".latextrans-")]
         for file in files:
             all_files.append(os.path.join(root, file))
     return all_files
@@ -913,9 +927,13 @@ def prepare_arxiv_source(arxiv_id: str, save_dir: str) -> str:
             # Older releases unpacked in place. Keep legacy partial files out of
             # both the cache lookup and project discovery, without deleting them.
             if any(project.rglob("*.tex")):
-                backup = tempfile.mkdtemp(dir=project.parent, prefix=".latextrans-invalid-")
+                quarantine = Path(save_dir, ".latextrans-quarantine")
+                quarantine.mkdir(exist_ok=True)
+                backup = tempfile.mkdtemp(dir=quarantine, prefix="invalid-")
                 project.rename(Path(backup, project.name))
             archive.unlink(missing_ok=True)
+            if project.parent != Path(save_dir) and not any(project.parent.iterdir()):
+                project.parent.rmdir()
             raise
     extract_compressed_files(project)
     return str(project)

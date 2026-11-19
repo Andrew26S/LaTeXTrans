@@ -9,6 +9,7 @@ from src.utils.paths import create_unique_dir
 from src.utils.progress import log_message
 from src.agents.coordinator_agent import CoordinatorAgent
 from src.formats.latex.utils import (
+    archive_stem,
     extract_archive,
     prepare_arxiv_source,
     extract_arxiv_ids,
@@ -24,36 +25,20 @@ ProjectEventCallback = Callable[[Dict[str, Any]], None]
 def resolve_path(path_value: str) -> Path:
     p = Path(path_value)
     if p.is_absolute():
-        return p
+        return Path(os.path.abspath(p))
     return (PROJECT_ROOT / p).resolve()
 
 
 def is_local_archive(path: str) -> bool:
     p = Path(path)
-    if not path or not p.is_file():
-        return False
-    lower = p.name.lower()
-    return lower.endswith((".zip", ".tar", ".tar.gz", ".tgz"))
-
-
-def archive_project_dir(archive_path: str, projects_dir: str) -> str:
-    name = os.path.basename(archive_path)
-    lower = name.lower()
-    if lower.endswith(".tar.gz"):
-        stem = name[:-7]
-    elif lower.endswith(".tgz"):
-        stem = name[:-4]
-    elif lower.endswith(".tar"):
-        stem = name[:-4]
-    elif lower.endswith(".zip"):
-        stem = name[:-4]
-    else:
-        stem = os.path.splitext(name)[0]
-    return os.path.join(projects_dir, stem)
+    return p.is_file() and bool(archive_stem(p))
 
 
 def extract_local_archive(archive_path: str, projects_dir: str) -> str:
-    target_dir = create_unique_dir(Path(archive_project_dir(archive_path, projects_dir)))
+    stem = archive_stem(Path(archive_path))
+    if not stem:
+        raise ValueError(f"Unrecognized archive format: {archive_path}")
+    target_dir = create_unique_dir(Path(projects_dir, stem))
     try:
         extract_archive(Path(archive_path), target_dir)
     except Exception:

@@ -1,4 +1,5 @@
 import io
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -9,7 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from main import main
-from src.formats.latex.utils import download_tex, is_already_downloaded
+from src.formats.latex.utils import download_tex, find_main_tex_file, is_already_downloaded, prepare_arxiv_source
 from src.runtime import build_retry_request, run_translation
 
 
@@ -111,7 +112,11 @@ class PreparationFailureTests(unittest.TestCase):
         project.mkdir(parents=True)
         (project / "partial.tex").touch()  # Legacy in-place extraction.
         archive = Path(f"{project}.tar.gz")
-        archive.write_bytes(b"corrupt")
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as source:
+            source.writestr("main.tex", "incomplete")
+        damaged = bytearray(archive.read_bytes())
+        damaged[30 + len("main.tex")] = 0xff  # Invalid DEFLATE block type.
+        archive.write_bytes(damaged)
         local = self.root / "other"
         local.mkdir()
         with patch("src.runtime.CoordinatorAgent"):
@@ -119,6 +124,16 @@ class PreparationFailureTests(unittest.TestCase):
         self.assertEqual(first["projects"], [str(local)])
         self.assertFalse(is_already_downloaded(paper, self.sources))
         self.assertFalse(archive.exists())
+
+        self.assertTrue(list((self.sources / ".latextrans-quarantine").rglob("partial.tex")))
+        valid = self.sources / "valid"
+        valid.mkdir()
+        old_backup = valid / ".latextrans-invalid-previous"
+        old_backup.mkdir()
+        (old_backup / "old.tex").write_text(r"\documentclass{article}")
+        self.assertIsNone(find_main_tex_file(str(valid)))
+        with patch("src.runtime.CoordinatorAgent"):
+            self.assertEqual(run_translation(str(self.config), all_existing=True)["projects"], [str(valid)])
 
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w") as source:
@@ -162,6 +177,7 @@ class PreparationFailureTests(unittest.TestCase):
         failed, good = "2501.12948", "2501.12949"
         self.config.write_text(self.config.read_text().replace('user_term = "local.csv"',
                                                               f'paper_list = ["{failed}", "{good}"]'))
+        self.config.write_text(self.config.read_text().replace(str(self.sources), str(self.root / "unused/../sources")))
         for paper in (failed, good):
             project = self.sources / paper
             project.mkdir(parents=True)
@@ -181,3 +197,32 @@ class PreparationFailureTests(unittest.TestCase):
             categories.assert_not_called()
         self.assertEqual(retried["projects"], [str(self.sources / failed)])
         self.assertEqual(coordinator.call_args.kwargs["config"]["category"][failed], ["cs.AI"])
+
+    def test_unreadable_cached_archive_is_retained(self):
+        paper = "2501.12948"
+        self.sources.mkdir()
+        archive = self.sources / f"{paper}.tar.gz"
+        archive.touch()
+        with patch.object(Path, "open", side_effect=PermissionError("unreadable")), self.assertRaises(PermissionError):
+            prepare_arxiv_source(paper, str(self.sources))
+        self.assertTrue(archive.exists())
+
+    def test_compressed_tar_projects_and_nested_assets(self):
+        self.sources.mkdir()
+        paper = self.sources / "existing"
+        paper.mkdir()
+        for suffix, mode in (("tar.xz", "w:xz"), ("tar.bz2", "w:bz2")):
+            for folder in (self.root, self.sources, paper):
+                archive = folder / f"{suffix}.{suffix}"
+                with tarfile.open(archive, mode) as source:
+                    source.addfile(tarfile.TarInfo("main.tex"), io.BytesIO())
+            with patch("src.runtime.CoordinatorAgent"):
+                explicit = run_translation(str(self.config), project_items=[str(self.root / f"{suffix}.{suffix}")],
+                                           overrides={"source": str(self.root / "explicit")})
+            self.assertEqual(explicit["projects"], [str(self.root / "explicit" / suffix)])
+        with patch("src.runtime.CoordinatorAgent"):
+            result = run_translation(str(self.config), all_existing=True)
+        self.assertFalse(result["failed_projects"])
+        for name in ("tar.xz", "tar.bz2"):
+            self.assertIn(str(self.sources / name), result["projects"])
+            self.assertTrue((paper / name / "main.tex").is_file())
