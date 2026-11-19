@@ -451,6 +451,118 @@ def remove_comments(tex: str) -> str:
 
     return '\n'.join(cleaned)
 
+# Environments whose content is never translated (math, code, floats, tables, drawings, ...).
+NO_TRANSLATE_ENVS = {
+    # display math
+    'equation', 'equation*', 'align', 'align*', 'alignat', 'alignat*', 'flalign', 'flalign*',
+    'gather', 'gather*', 'multline', 'multline*', 'split', 'split*', 'cases', 'cases*', 'subequations',
+    'eqnarray', 'eqnarray*', 'displaymath', 'math', 'aligned', 'alignedat', 'gathered', 'dcases', 'rcases',
+    'array', 'matrix', 'pmatrix', 'bmatrix', 'Bmatrix', 'vmatrix', 'Vmatrix', 'smallmatrix',
+    # code
+    'verbatim', 'verbatim*', 'Verbatim', 'lstlisting', 'lstlisting*', 'minted', 'minted*',
+    # floats, tables and drawings
+    'figure', 'figure*', 'wrapfigure', 'SCfigure', 'tikzpicture', 'scope', 'CJK',
+    'table', 'table*', 'tabular', 'tabular*', 'tabularx', 'tabulary', 'longtable', 'longtable*', 'sidewaystable',
+    'tcolorbox',
+    # bibliography and algorithms
+    'thebibliography', 'bibliography', 'bibitem',
+    'algorithm', 'algorithm*', 'algorithmic', 'algorithmic*', 'algorithmicx', 'algorithmicx*', 'algorithm2e',
+}
+
+# Environments that are always translated, whatever their content looks like.
+ALWAYS_TRANSLATE_ENVS = {'abstract'}
+
+# Minimum number of natural-language words for an environment to be translated.
+MIN_NATURAL_LANGUAGE_WORDS = 2
+
+_MACRO_PARAM_PATTERN = re.compile(r"(?<!\\)#\d")
+_PLACEHOLDER_PATTERN = re.compile(r"<PLACEHOLDER_[^>]*>")
+# Runs of 2+ letters in any script (excludes digits and underscores).
+_WORD_PATTERN = re.compile(r"[^\W\d_]{2,}")
+_CJK_PATTERN = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯]")
+
+
+def env_has_natural_language(content: str) -> bool:
+    """
+    Decide locally whether a LaTeX environment contains human-readable text that should be
+    translated. Math, macro parameters (#1) and placeholders are ignored. When the content
+    cannot be parsed, the environment is translated: the translation prompt keeps
+    non-text content unchanged, while a false negative would leave text untranslated.
+    """
+    if _MACRO_PARAM_PATTERN.search(content):
+        # Body of a macro/environment definition, not document text.
+        return False
+
+    content = _PLACEHOLDER_PATTERN.sub(" ", content)
+    try:
+        text = LatexNodes2Text(math_mode='remove').latex_to_text(content)
+    except Exception:
+        return True
+
+    if len(_CJK_PATTERN.findall(text)) >= 2:
+        return True
+    return len(_WORD_PATTERN.findall(text)) >= MIN_NATURAL_LANGUAGE_WORDS
+
+
+def env_need_trans(env_name: str, content: str) -> bool:
+    if env_name in ALWAYS_TRANSLATE_ENVS:
+        return True
+    if env_name in NO_TRANSLATE_ENVS:
+        return False
+    if re.search(r"<PLACEHOLDER_CAP_\d+>", content):
+        # Captions inside this environment are translated separately.
+        return False
+    return env_has_natural_language(content)
+
+
+# Document-level structure that must never be introduced by a translated fragment.
+DOCUMENT_STRUCTURE_PATTERNS = {
+    r"\documentclass": re.compile(r"\\documentclass\s*(?:\[[^\]]*\])?\s*\{[^}]*\}"),
+    r"\begin{document}": re.compile(r"\\begin\s*\{document\}"),
+    r"\end{document}": re.compile(r"\\end\s*\{document\}"),
+}
+
+_CODE_FENCE_PATTERN = re.compile(r"^\s*```[a-zA-Z]*[ \t]*\n(.*?)\n?```\s*$", re.DOTALL)
+
+
+def find_extra_document_structure(src: str, trans: str) -> dict:
+    """
+    Return {element: (src_count, trans_count)} for document-structure commands
+    that occur more often in the translation than in the source.
+    """
+    extras = {}
+    for name, pattern in DOCUMENT_STRUCTURE_PATTERNS.items():
+        src_count = len(pattern.findall(src))
+        trans_count = len(pattern.findall(trans))
+        if trans_count > src_count:
+            extras[name] = (src_count, trans_count)
+    return extras
+
+
+def sanitize_llm_translation(src: str, trans: str) -> str:
+    """
+    Remove artifacts that LLMs tend to add when translating a LaTeX fragment:
+    a wrapping ```latex code fence, and \\documentclass / \\begin{document} /
+    \\end{document} that are not present in the source. Extra occurrences are
+    removed from the end of the translation, keeping the source's count.
+    """
+    if not trans:
+        return trans
+
+    if "```" not in src:
+        fence = _CODE_FENCE_PATTERN.match(trans)
+        if fence:
+            trans = fence.group(1)
+
+    for pattern in DOCUMENT_STRUCTURE_PATTERNS.values():
+        src_count = len(pattern.findall(src))
+        matches = list(pattern.finditer(trans))
+        for match in reversed(matches[src_count:]):
+            trans = trans[:match.start()] + trans[match.end():]
+
+    return trans.strip()
+
+
 def compress_newlines(tex):
     """
     Replace consecutive newlines (including spaces) exceeding four with exactly two newlines.
@@ -474,7 +586,7 @@ def get_env_pattern(command_name):
 
 def get_abstract_pattern():
     """
-    Get the regex pattern for matching \begin{abstract} and \end{abstract} commands.
+    Get the regex pattern for matching \\begin{abstract} and \\end{abstract} commands.
     """
     command_name = r'abstract'
     get_command_env = lambda name: rf"\\begin{spaces}\{{({name})\}}{spaces}({options})?(.*?)\\end{spaces}\{{\1\}}"
@@ -484,7 +596,7 @@ def get_abstract_pattern():
 
 def get_keywords_pattern():
     """
-    Get the regex pattern for matching \keywords commands.
+    Get the regex pattern for matching \\keywords commands.
     """
     command_name = r'keywords'
     command = get_pattern_command_full(command_name)

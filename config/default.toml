@@ -11,7 +11,8 @@ mode = 0
 user_term = ""
 
 [llm_config]
-model = ""
+model = "deepseek-flash"
 api_key = ""
-base_url = ""
+base_url = "https://api.deepseek.com/v1/chat/completions"
 timeout = 100 # seconds
+# max_tokens = 8192 # optional output-token cap, only sent when set
