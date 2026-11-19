@@ -70,7 +70,7 @@ def extract_compressed_files(folder_path):
     Args:
         folder_path (str): Path to the folder containing compressed files.
     """
-    # paths = []
+    failures = {}
     for root, _, files in os.walk(folder_path):
         for file in files:
             file_path = os.path.join(root, file)
@@ -84,14 +84,18 @@ def extract_compressed_files(folder_path):
                     os.remove(file_path)
                 elif tarfile.is_tarfile(file_path):
                     with tarfile.open(file_path, 'r:*') as tar_ref:
-                        extract_path = Path(root) / file.replace('.tar', '').replace('.gz', '')
+                        stem = file[:-7] if file.lower().endswith(".tar.gz") else Path(file).stem
+                        extract_path = Path(root) / stem
                         extract_path.mkdir(parents=True, exist_ok=True)
                         _safe_extract_tar(tar_ref, extract_path)
                         print(f"Extracted {file} to {extract_path}")
                     os.remove(file_path)
+                elif file.lower().endswith((".tar.gz", ".tgz", ".tar", ".zip")):
+                    raise ValueError("Unrecognized archive format.")
             except Exception as e:
+                failures[file_path] = str(e)
                 print(f"[SKIP] Failed to extract {file_path}: {e}")
-    # return paths
+    return failures
 
 def get_profect_dirs(folder_path):
     """
@@ -842,8 +846,9 @@ def is_already_downloaded(arxiv_id: str, save_dir: str) -> bool:
     检查 tar.gz 文件或已解压目录是否存在
     """
     tar_path = os.path.join(save_dir, f"{arxiv_id}.tar.gz")
-    extracted_dir = os.path.join(save_dir, arxiv_id)
-    return os.path.exists(tar_path) or os.path.isdir(extracted_dir)
+    extracted_dir = Path(save_dir, arxiv_id)
+    # A failed source download may still have cached the original PDF.
+    return os.path.exists(tar_path) or any(extracted_dir.rglob("*.tex"))
 
 def download_tex(arxiv_id: str, tex_url: str, save_dir: str, headers: dict):
     """

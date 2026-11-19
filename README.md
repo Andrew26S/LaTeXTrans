@@ -60,24 +60,45 @@ cd LaTeXTrans
 pip install -e .
 ```
 
-#### 2. Install MikTex(Recommended) or TeXLive
+#### 2. Install a TeX distribution for PDF output
 
-If you need to compile LaTeX files (e.g., generate PDF output), install [MikTex](https://miktex.org/download) or [TeXLive](https://www.tug.org/texlive/) !
+On Ubuntu (including Ubuntu on WSL), install TeX Live with apt. For English-to-Chinese papers, start with the build tools, Chinese language support, and fonts.
+
+```bash
+sudo apt update
+sudo apt install latexmk texlive-xetex texlive-latex-recommended texlive-lang-chinese
+sudo apt install texlive-fonts-recommended fonts-noto-cjk fonts-noto-cjk-extra
+```
+
+Add the following groups as your paper templates require them. If disk space is limited, install only the packages your paper needs.
+
+```bash
+# Additional LaTeX macros, scientific typesetting, and diagrams
+sudo apt install texlive-latex-extra texlive-science texlive-pictures
+
+# Publisher templates (including ACM and IEEE) and BibTeX styles
+sudo apt install texlive-publishers texlive-bibtex-extra
+
+# Extra fonts (e.g., inconsolata and newtxmath) and humanities macros (e.g., dramatist)
+sudo apt install texlive-fonts-extra texlive-humanities
+```
+
+The extra fonts alone take over 1 GiB of installed space on Ubuntu 24.04. You can install either package in the last group separately.
 
  > [!IMPORTANT]
-For MikTex, installation please be sure to select "install on the fly", in addition, you need to install additional [Strawberry Perl](http://strawberryperl.com/) support compilation.
+> On Windows, if you use MiKTeX, enable on-the-fly package installation and install Perl for `latexmk`. [MiKTeX](https://miktex.org/download) · [Strawberry Perl](https://strawberryperl.com/)
 
 # ⚙️ Configuration Guide
 
 ### Local Configuration
 
-Please edit the configuration file before use:
+From the repository root, copy the template on first use. Both the CLI and GUI default to `config/local.toml`.
 
-```arduino
-config/default.toml
+```bash
+cp -n config/default.toml config/local.toml
 ```
 
-Set the language model's API key and base URL in default.toml :
+Edit the model, API key, and full chat completions URL under `[llm_config]` in `config/local.toml`. To select another file in the CLI, use `--config PATH`.
 
 ```toml
 model = " " # model name (For example, deepseek-chat)
