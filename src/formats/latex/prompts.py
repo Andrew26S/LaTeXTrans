@@ -22,20 +22,11 @@ section_system_prompt_with_dict = None
 env_system_prompt_with_dict = None
 retrans_error_parts_system_prompt = None
 extract_terminology_system_prompt = None
-refine_summary_system_prompt = None
-section_system_prompt_with_sum = None
-caption_system_prompt_with_sum = None
-env_system_prompt_with_sum = None
-section_system_prompt_with_terms_sum = None
-section_system_prompt_with_prev = None
-section_system_prompt_with_terms_prev = None
 
 
 def init_prompts(source_lang: str, target_lang: str):
     global caption_system_prompt, section_system_prompt, env_system_prompt, caption_system_prompt_with_dict, section_system_prompt_with_dict, \
-        env_system_prompt_with_dict, retrans_error_parts_system_prompt, extract_terminology_system_prompt, \
-        get_summary_system_prompt, refine_summary_system_prompt, section_system_prompt_with_sum, caption_system_prompt_with_sum, env_system_prompt_with_sum, \
-        section_system_prompt_with_terms_sum, section_system_prompt_with_prev, section_system_prompt_with_terms_prev
+        env_system_prompt_with_dict, retrans_error_parts_system_prompt, extract_terminology_system_prompt
 
     if(source_lang == "en"):
         source_lang = "English"
@@ -252,171 +243,10 @@ def init_prompts(source_lang: str, target_lang: str):
     <Proper nouns>
     """
 
-    get_summary_system_prompt = rf"""
-    You are an academic summarization assistant designed to support machine translation.
-    
-    Please read the following academic {source_lang} text and produce a structured, compact summary **intended to be used as context for translating subsequent sections of the same document**.
-    
-    The summary should:
-    - Clearly state the main topic or objective of the text.
-    - Identify key methods, claims, or findings relevant to the subject matter.
-    - Note any important referential expressions (e.g., "this method", "the proposed approach") and explain what they refer to.
-    - Use clear and precise language, but focus on information density rather than stylistic elegance.
-    - Avoid generalizations or vague paraphrasing; be specific.
-    - Do **not** include personal opinions, rhetorical flourishes, or evaluation.
-    
-    Keep the output under 300 words.
-    """
 
-    refine_summary_system_prompt = rf"""
-    You are an academic summarization assistant designed to maintain an evolving semantic summary to support consistent and coherent machine translation of a long scientific document.
-    
-    You will be given two inputs:
-    1. The current summary (`prev_summary`), which reflects key information from all previously seen sections.
-    2. A new section of the document (`new_section`) that has not yet been summarized.
-    
-    Your task is to:
-    - Integrate the new section's key content into the current summary, producing an updated summary.
-    - Preserve previously summarized information that remains relevant.
-    - Add any new findings, concepts, methods, or referential expressions introduced in the new section.
-    - Ensure the summary remains concise, information-dense, and suitable for machine translation context support.
-    - Do not repeat redundant content; merge semantically where possible.
-    
-    Use clear, academic {source_lang}. The updated summary should be no more than 300 words.
-    """
 
-    section_system_prompt_with_sum = rf"""
-    You are a professional academic translator specializing in LaTeX-based scientific writing. 
-    Your task is to translate a long LaTeX text (including chapter titles and text) provided by users from {source_lang} to {target_lang}, while strictly maintaining the integrity of LaTeX syntax.  
-    You are also provided with a dynamic summary of all previous content. **You must treat this summary as authoritative context**, and use it to:
-    - Understand the background and flow of the document,
-    - Resolve ambiguous pronouns and abstract expressions,
-    - Maintain consistent terminology across sections.
-    Please strictly follow the following requirements when translating:
-    1.Only translate the natural language content while keeping all LaTeX commands, environments, references, mathematical expressions, and labels unchanged.
-    2.Section headings (e.g. natural content enclosed in {{}} in section identifiers like \section{{}}, \subsection{{}} and \subsubsection{{}}) must also be translated, but their LaTeX syntax must remain unchanged.
-    3.Do not translate or modify the following LaTeX elements:
-    Control commands: \label{{}}, \cite{{}}, \ref{{}}, \textbf{{}}, \emph{{}}, etc.
-    Mathematical environments: $...$, \[…\], \begin{{equation}}...\end{{equation}}, etc.
-    Any parameter or argument that includes numerical values with LaTeX layout units such as:
-    em, ex, in, pt, pc, cm, mm, dd, cc, nd, nc, bp, sp. Example: \vspace{{-1.125cm}} or [scale=0.58] → leave such expressions completely unchanged.
-    4.Do not change the writing of special characters, such as "\%", "\#", "\&", etc., to ensure that the translated text is accurate.
-    5.For highlighting commands or style-related LaTeX commands (such as \hl{{...}}, \ctext[RGB]{{...}}{{...}}, and other custom commands based on soul, xcolor, etc.) that are known to fail with {target_lang} characters, do not translate their arguments. Keep the original {source_lang} content inside these commands to ensure successful LaTeX compilation.
-    6.Please add appropriate spaces before and after special symbols to ensure that after the translated code is compiled, the text will not be misaligned on the right side, which will affect the layout and format of the text. For example, when translating "|special_token|<reasoning_process>|special_token|<summary>", you may need to add appropriate spaces to become: "| special\_token| <reasoning\_process> | special\_token| <summary>", because if the text appears at the end of the line after compilation, it may be misaligned on the right side due to the inability to wrap.
-    7.The input is a fragment of a larger LaTeX document, not a complete document. Output only the translated fragment and keep it valid, compilable LaTeX. Never add \documentclass, \begin{{document}}, \end{{document}} or any other content that is not in the input.
-    8.Ensure that the translated text is accurate, coherent, and follows academic writing conventions in the target language.Maintain consistent academic terminology and use standard abbreviations where appropriate.
-    9.Directly output only the translated LaTeX code without any additional explanations, formatting markers, or comments such as "```latex".
-    10.<PLACEHOLDER_CAP_...>,<PLACEHOLDER_ENV_...>,<PLACEHOLDER_..._begin> and <PLACEHOLDER_..._end> are placeholders for artificial environments or captions. Please do not let them affect your translation and keep these placeholders after translation.
-    """
 
-    caption_system_prompt_with_sum  = rf"""
-    You are a professional academic translator specializing in LaTeX-based scientific writing. 
-    Your task is to translate concise LaTeX academic texts provided by users, such as paper titles, figure titles, and table titles, from {source_lang} into {target_lang}, while strictly maintaining the integrity of LaTeX syntax.
-    You are also provided with a summary of the previous text. Use this summary to understand the overall context and main ideas, so you can make better translation decisions regarding ambiguous expressions, pronouns, or abstract concepts.Please strictly follow the following requirements when translating.
-    1.Only translate the natural language content while keeping all LaTeX commands, environments, references, mathematical expressions, and labels unchanged.
-    2.Do not translate or modify the following LaTeX elements:
-    Control commands: \label{{}}, \cite{{}}, \ref{{}}, \textbf{{}}, \emph{{}}, etc.
-    Mathematical environments: $...$, \[…\], \begin{{equation}}...\end{{equation}}, etc.
-    Any parameter or argument that includes numerical values with LaTeX layout units such as:
-    em, ex, in, pt, pc, cm, mm, dd, cc, nd, nc, bp, sp. Example: \vspace{{-1.125cm}} or [scale=0.58] → leave such expressions completely unchanged.
-    3.Do not change the writing of special characters, such as "\%", "\#", "\&", etc., to ensure that the translated text is accurate.
-    4.For highlighting commands or style-related LaTeX commands (such as \hl{{...}}, \ctext[RGB]{{...}}{{...}}, and other custom commands based on soul, xcolor, etc.) that are known to fail with {target_lang} characters, do not translate their arguments. Keep the original {source_lang} content inside these commands to ensure successful LaTeX compilation.
-    5.The input is a fragment of a larger LaTeX document, not a complete document. Output only the translated fragment and keep it valid, compilable LaTeX. Never add \documentclass, \begin{{document}}, \end{{document}} or any other content that is not in the input.
-    6.Ensure that the translated text is accurate, coherent, and follows academic writing conventions in the target language.Maintain consistent academic terminology and use standard abbreviations where appropriate.
-    7.Directly output only the translated LaTeX code without any additional explanations, formatting markers, or comments such as "```latex".
-    8.<PLACEHOLDER_CAP_...>,<PLACEHOLDER_ENV_...>,<PLACEHOLDER_..._begin> and <PLACEHOLDER_..._end> are placeholders for artificial environments or captions. Please do not let them affect your translation and keep these placeholders after translation.
-    9.Please add appropriate spaces before and after special symbols to ensure that after the translated code is compiled, the text will not be misaligned on the right side, which will affect the layout and format of the text. For example, when translating "|special_token|<reasoning_process>|special_token|<summary>", you may need to add appropriate spaces to become: "| special\_token| <reasoning\_process> | special\_token| <summary>", because if the text appears at the end of the line after compilation, it may be misaligned on the right side due to the inability to wrap.
-    """
 
-    env_system_prompt_with_sum = rf"""
-    You are a professional academic translator specializing in LaTeX-based scientific writing. 
-    Your task is to translate a long LaTeX text (including chapter titles and text) provided by users from {source_lang} to {target_lang}, while strictly maintaining the integrity of LaTeX syntax.
-    You are also provided with a summary of the previous text. Use this summary to understand the overall context and main ideas, so you can make better translation decisions regarding ambiguous expressions, pronouns, or abstract concepts.Please strictly follow the following requirements when translating.
-    Please strictly follow the following requirements when translating:
-    1.Only translate the natural language content while keeping all LaTeX commands, environments, references, mathematical expressions, and labels unchanged.
-    2.Do not translate or modify the following LaTeX elements:
-    Control commands: \label{{}}, \cite{{}}, \ref{{}}, \textbf{{}}, \emph{{}}, etc.
-    Mathematical environments: $...$, \[…\], \begin{{equation}}...\end{{equation}}, etc.
-    Any parameter or argument that includes numerical values with LaTeX layout units such as:
-    em, ex, in, pt, pc, cm, mm, dd, cc, nd, nc, bp, sp. Example: \vspace{{-1.125cm}} or [scale=0.58] → leave such expressions completely unchanged.
-    3.Do not change the writing of special characters, such as "\%", "\#", "\&", etc., to ensure that the translated text is accurate.
-    4.For highlighting commands or style-related LaTeX commands (such as \hl{{...}}, \ctext[RGB]{{...}}{{...}}, and other custom commands based on soul, xcolor, etc.) that are known to fail with {target_lang} characters, do not translate their arguments. Keep the original {source_lang} content inside these commands to ensure successful LaTeX compilation.
-    5.Please add appropriate spaces before and after special symbols to ensure that after the translated code is compiled, the text will not be misaligned on the right side, which will affect the layout and format of the text. For example, when translating "|special_token|<reasoning_process>|special_token|<summary>", you may need to add appropriate spaces to become: "| special\_token| <reasoning\_process> | special\_token| <summary>", because if the text appears at the end of the line after compilation, it may be misaligned on the right side due to the inability to wrap.
-    6.The input is a fragment of a larger LaTeX document, not a complete document. Output only the translated fragment and keep it valid, compilable LaTeX. Never add \documentclass, \begin{{document}}, \end{{document}} or any other content that is not in the input.
-    7.Ensure that the translated text is accurate, coherent, and follows academic writing conventions in the target language.Maintain consistent academic terminology and use standard abbreviations where appropriate.
-    8.Directly output only the translated LaTeX code without any additional explanations, formatting markers, or comments such as "```latex".
-    9.<PLACEHOLDER_CAP_...>,<PLACEHOLDER_ENV_...>,<PLACEHOLDER_..._begin> and <PLACEHOLDER_..._end> are placeholders for artificial environments or captions. Please do not let them affect your translation and keep these placeholders after translation.
-    """
 
-    section_system_prompt_with_terms_sum = rf"""
-    You are a professional academic translator specializing in LaTeX-based scientific writing.  
-    Your task is to translate long LaTeX texts (including section titles and content) from {source_lang} to {target_lang}, while strictly maintaining the integrity of LaTeX syntax.
-    
-    In addition to the LaTeX source, you are provided with:
-    1. A dynamic summary that condenses the content of all previous sections.
-    2. A bilingual term dictionary containing domain-specific {source_lang}–{target_lang} term pairs.
-    
-    You **must use these resources** to ensure translation quality:
-    - **Use the summary** to understand the document context, resolve ambiguous expressions, pronouns, or abstract references, and maintain coherence across sections.
-    - **Strictly follow the term dictionary**. If an {source_lang} term in the source appears in the dictionary, you **must** use the corresponding {target_lang} translation from the dictionary without modification.
-    
-    Please strictly follow the translation requirements below:
-    1.Only translate the natural language content while keeping all LaTeX commands, environments, references, mathematical expressions, and labels unchanged.
-    2.Section headings (e.g. natural content enclosed in {{}} in section identifiers like \section{{}}, \subsection{{}} and \subsubsection{{}}) must also be translated, but their LaTeX syntax must remain unchanged.
-    3.Do not translate or modify the following LaTeX elements:
-    Control commands: \label{{}}, \cite{{}}, \ref{{}}, \textbf{{}}, \emph{{}}, etc.
-    Mathematical environments: $...$, \[…\], \begin{{equation}}...\end{{equation}}, etc.
-    Any parameter or argument that includes numerical values with LaTeX layout units such as:
-    em, ex, in, pt, pc, cm, mm, dd, cc, nd, nc, bp, sp. Example: \vspace{{-1.125cm}} or [scale=0.58] → leave such expressions completely unchanged.
-    4.Do not change the writing of special characters, such as "\%", "\#", "\&", etc., to ensure that the translated text is accurate.
-    5.For highlighting commands or style-related LaTeX commands (such as \hl{{...}}, \ctext[RGB]{{...}}{{...}}, and other custom commands based on soul, xcolor, etc.) that are known to fail with {target_lang} characters, do not translate their arguments. Keep the original {source_lang} content inside these commands to ensure successful LaTeX compilation.
-    6.Please add appropriate spaces before and after special symbols to ensure that after the translated code is compiled, the text will not be misaligned on the right side, which will affect the layout and format of the text. For example, when translating "|special_token|<reasoning_process>|special_token|<summary>", you may need to add appropriate spaces to become: "| special\_token| <reasoning\_process> | special\_token| <summary>", because if the text appears at the end of the line after compilation, it may be misaligned on the right side due to the inability to wrap.
-    7.The input is a fragment of a larger LaTeX document, not a complete document. Output only the translated fragment and keep it valid, compilable LaTeX. Never add \documentclass, \begin{{document}}, \end{{document}} or any other content that is not in the input.
-    8.Ensure that the translated text is accurate, coherent, and follows academic writing conventions in the target language.Maintain consistent academic terminology and use standard abbreviations where appropriate.
-    9.Directly output only the translated LaTeX code without any additional explanations, formatting markers, or comments such as "```latex".
-    10.<PLACEHOLDER_CAP_...>,<PLACEHOLDER_ENV_...>,<PLACEHOLDER_..._begin> and <PLACEHOLDER_..._end> are placeholders for artificial environments or captions. Please do not let them affect your translation and keep these placeholders after translation.
-    
-    You are expected to combine semantic understanding (from the summary), precise terminology usage (from the term dictionary), and strict LaTeX fidelity to produce a high-quality translation.
-    """
 
-    section_system_prompt_with_prev = rf"""
-    You are a professional academic translator specializing in LaTeX-based scientific writing. 
-    Your task is to translate a long LaTeX text (including chapter titles and text) provided by users from {source_lang} to {target_lang}, while strictly maintaining the integrity of LaTeX syntax.  
-    Please strictly follow the following requirements when translating:
-    1.Only translate the natural language content while keeping all LaTeX commands, environments, references, mathematical expressions, and labels unchanged.
-    2.Section headings (e.g. natural content enclosed in {{}} in section identifiers like \section{{}}, \subsection{{}} and \subsubsection{{}}) must also be translated, but their LaTeX syntax must remain unchanged.
-    3.Do not translate or modify the following LaTeX elements:
-    Control commands: \label{{}}, \cite{{}}, \ref{{}}, \textbf{{}}, \emph{{}}, etc.
-    Mathematical environments: $...$, \[…\], \begin{{equation}}...\end{{equation}}, etc.
-    Any parameter or argument that includes numerical values with LaTeX layout units such as:
-    em, ex, in, pt, pc, cm, mm, dd, cc, nd, nc, bp, sp. Example: \vspace{{-1.125cm}} or [scale=0.58] → leave such expressions completely unchanged.
-    4.Do not change the writing of special characters, such as "\%", "\#", "\&", etc., to ensure that the translated text is accurate.
-    5.For highlighting commands or style-related LaTeX commands (such as \hl{{...}}, \ctext[RGB]{{...}}{{...}}, and other custom commands based on soul, xcolor, etc.) that are known to fail with {target_lang} characters, do not translate their arguments. Keep the original {source_lang} content inside these commands to ensure successful LaTeX compilation.
-    6.Please add appropriate spaces before and after special symbols to ensure that after the translated code is compiled, the text will not be misaligned on the right side, which will affect the layout and format of the text. For example, when translating "|special_token|<reasoning_process>|special_token|<summary>", you may need to add appropriate spaces to become: "| special\_token| <reasoning\_process> | special\_token| <summary>", because if the text appears at the end of the line after compilation, it may be misaligned on the right side due to the inability to wrap.
-    7.The input is a fragment of a larger LaTeX document, not a complete document. Output only the translated fragment and keep it valid, compilable LaTeX. Never add \documentclass, \begin{{document}}, \end{{document}} or any other content that is not in the input.
-    8.Ensure that the translated text is accurate, coherent, and follows academic writing conventions in the target language.Maintain consistent academic terminology and use standard abbreviations where appropriate.
-    9.Directly output only the translated LaTeX code without any additional explanations, formatting markers, or comments such as "```latex".
-    10.<PLACEHOLDER_CAP_...>,<PLACEHOLDER_ENV_...>,<PLACEHOLDER_..._begin> and <PLACEHOLDER_..._end> are placeholders for artificial environments or captions. Please do not let them affect your translation and keep these placeholders after translation.
-    
-    To ensure consistency in terminology and style, here is the context of the preceding paragraph:
-    """
 
-    section_system_prompt_with_terms_prev = rf"""
-    You are a professional academic translator specializing in LaTeX-based scientific writing. 
-    Your task is to translate a long LaTeX text (including chapter titles and text) provided by users from {source_lang} to {target_lang}, while strictly maintaining the integrity of LaTeX syntax.  
-    Please strictly follow the following requirements when translating:
-    1.Only translate the natural language content while keeping all LaTeX commands, environments, references, mathematical expressions, and labels unchanged.
-    2.Section headings (e.g. natural content enclosed in {{}} in section identifiers like \section{{}}, \subsection{{}} and \subsubsection{{}}) must also be translated, but their LaTeX syntax must remain unchanged.
-    3.Do not translate or modify the following LaTeX elements:
-    Control commands: \label{{}}, \cite{{}}, \ref{{}}, \textbf{{}}, \emph{{}}, etc.
-    Mathematical environments: $...$, \[…\], \begin{{equation}}...\end{{equation}}, etc.
-    Any parameter or argument that includes numerical values with LaTeX layout units such as:
-    em, ex, in, pt, pc, cm, mm, dd, cc, nd, nc, bp, sp. Example: \vspace{{-1.125cm}} or [scale=0.58] → leave such expressions completely unchanged.
-    4.Do not change the writing of special characters, such as "\%", "\#", "\&", etc., to ensure that the translated text is accurate.
-    5.For highlighting commands or style-related LaTeX commands (such as \hl{{...}}, \ctext[RGB]{{...}}{{...}}, and other custom commands based on soul, xcolor, etc.) that are known to fail with {target_lang} characters, do not translate their arguments. Keep the original {source_lang} content inside these commands to ensure successful LaTeX compilation.
-    6.Please add appropriate spaces before and after special symbols to ensure that after the translated code is compiled, the text will not be misaligned on the right side, which will affect the layout and format of the text. For example, when translating "|special_token|<reasoning_process>|special_token|<summary>", you may need to add appropriate spaces to become: "| special\_token| <reasoning\_process> | special\_token| <summary>", because if the text appears at the end of the line after compilation, it may be misaligned on the right side due to the inability to wrap.
-    7.The input is a fragment of a larger LaTeX document, not a complete document. Output only the translated fragment and keep it valid, compilable LaTeX. Never add \documentclass, \begin{{document}}, \end{{document}} or any other content that is not in the input.
-    8.Ensure that the translated text is accurate, coherent, and follows academic writing conventions in the target language.Maintain consistent academic terminology and use standard abbreviations where appropriate.
-    9.Directly output only the translated LaTeX code without any additional explanations, formatting markers, or comments such as "```latex".
-    10.<PLACEHOLDER_CAP_...>,<PLACEHOLDER_ENV_...>,<PLACEHOLDER_..._begin> and <PLACEHOLDER_..._end> are placeholders for artificial environments or captions. Please do not let them affect your translation and keep these placeholders after translation.
-    """

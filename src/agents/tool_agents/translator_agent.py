@@ -10,7 +10,6 @@ import re
 import regex
 import asyncio
 import aiohttp
-import requests
 import time
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -62,10 +61,6 @@ class TranslatorAgent(BaseToolAgent):
         self.trans_mode = trans_mode if trans_mode is not None else 0
         # self.term_dict = config.get("term_dict", {})  # Dictionary for terminology translation
         self.term_dict = {}
-        self.summary = ''
-        self.prev_text = ''
-        self.prev_transed_text = ''
-        self.currant_content = ''
 
     async def execute(self, error_retry_count=0, Maxtry=3):
 
@@ -734,82 +729,6 @@ class TranslatorAgent(BaseToolAgent):
             print(f"Warning: failed to extract terms, set N/A. {e}")
             return "N/A"
 
-    def _request_llm_for_summary(self, system_prompt: str, text: str) -> str:
-        """
-        Requests the LLM to summarize the given text.
-        """
-        payload = {
-            "model": f"{self.model}",
-            "messages": [
-                {
-                    "role": "system", 
-                    "content": f"{system_prompt}"
-                },
-                {
-                    "role": "user", 
-                    "content": f"<Text to summarize>:\n{text}\n<Summary>:\n"
-                }
-            ],
-            "temperature": 0.7,
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        for attempt in range(1, 4):
-            try:
-                response = requests.post(self.base_url, json=payload, headers=headers, timeout=self.timeout)
-                response.raise_for_status()  
-                result = response.json()
-                return result["choices"][0]["message"]["content"].strip()
-            except requests.exceptions.RequestException as e:
-                if attempt < 3:
-                    print(f"{e}")
-                    time.sleep(3)  
-                else:
-                    print("Warning: failed to summarize text, set N/A.")
-                    return "N/A"
-
-    def _request_llm_for_refine_summary(self, system_prompt: str, text: str, sum: str) -> str:
-        """
-        Requests the LLM to refine the given summary.
-        """
-        payload = {
-            "model": f"{self.model}",
-            "messages": [
-                {
-                    "role": "system", 
-                    "content": f"{system_prompt}"
-                },
-                {
-                    "role": "user", 
-                    "content": f"<prev_summary>:\n{sum}\n<new_section>:\n{text}\n<refined_summary>:\n"
-                }
-            ],
-            "temperature": 0.7,
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        for attempt in range(1, 4):
-            try:
-                response = requests.post(self.base_url, json=payload, headers=headers, timeout=self.timeout)
-                response.raise_for_status()  
-                result = response.json()
-                return result["choices"][0]["message"]["content"].strip()
-            except requests.exceptions.RequestException as e:
-                if attempt < 3:
-                    print(f"{e}")
-                    time.sleep(3)  
-                else:
-                    print("Warning: failed to refine summary, set N/A.")
-                    return "N/A"
-
     def _updated_term_dict(self, text: str) -> None:
         """
         Updates the term dictionary with new terms.
@@ -859,60 +778,6 @@ class TranslatorAgent(BaseToolAgent):
         text = delete_ph(text)
         return text
     
-    def _merge_with_prev_sections(self, sections: list[dict], idx: int) -> str:
-        """
-        Merge content of current section with previous two sections (if valid).
-        Ignore sections whose 'section' field is "-1" or "0".
-
-        Parameters:
-            sections (list of dict): A list of sections, each with keys "section" and "content".
-            idx (int): The index of the current section in the list.
-
-        Returns:
-            str: The merged content string.
-        """
-        if not (0 <= idx < len(sections)):
-            raise IndexError("Index out of range.")
-
-        merged_content = []
-        merged_trans_content = []
-
-        # Check second previous section
-        # if idx >= 2:
-        #     sec = sections[idx - 2]
-        #     if sec["section"] not in {"-1", "0"}:
-        #         try:
-        #             content = self._extract_text_from_tex(sec["content"])
-        #             transed_content = self._extract_text_from_tex(sec["trans_content"])
-        #             merged_content.append(content)
-        #             merged_trans_content.append(transed_content)
-        #         except Exception as e:
-        #             pass
-                
-
-        # Check first previous section
-        if idx >= 1:
-            sec = sections[idx - 1]
-            if sec["section"] not in {"-1", "0"}:
-                try:
-                    content = self._extract_text_from_tex(sec["content"])
-                    transed_content = self._extract_text_from_tex(sec["trans_content"])
-                    merged_content.append(content)
-                    merged_trans_content.append(transed_content)
-                except Exception as e:
-                    pass
-
-        # Always include current section
-        try:
-            content = self._extract_text_from_tex(sections[idx]["content"])
-            transed_content = self._extract_text_from_tex(sections[idx]["trans_content"])
-            merged_content.append(content)
-            merged_trans_content.append(transed_content)
-        except Exception as e:
-            pass
-
-        return "\n".join(merged_content)
-
     def build_term_dict(self):
         if self.user_term:
             df = pd.read_csv(self.user_term, header=None, names=['English Term', 'Chinese Translation'])
