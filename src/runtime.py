@@ -1,7 +1,5 @@
 import os
 import shutil
-import tarfile
-import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
@@ -10,7 +8,8 @@ import toml
 from src.utils.progress import log_message
 from src.agents.coordinator_agent import CoordinatorAgent
 from src.formats.latex.utils import (
-    batch_download_arxiv_tex,
+    extract_archive,
+    prepare_arxiv_source,
     extract_arxiv_ids,
     extract_compressed_files,
     get_arxiv_category,
@@ -65,41 +64,10 @@ def create_unique_dir(base_dir: Path) -> Path:
             candidate = base_dir.with_name(f"{base_dir.name}_{index}")
 
 
-def is_within_dir(base_dir: Path, target_path: Path) -> bool:
-    try:
-        target_path.resolve().relative_to(base_dir.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def safe_extract_zip(zip_ref: zipfile.ZipFile, target_dir: Path) -> None:
-    for member in zip_ref.infolist():
-        member_path = target_dir / member.filename
-        if not is_within_dir(target_dir, member_path):
-            raise ValueError(f"Unsafe zip member path: {member.filename}")
-    zip_ref.extractall(target_dir)
-
-
-def safe_extract_tar(tar_ref: tarfile.TarFile, target_dir: Path) -> None:
-    for member in tar_ref.getmembers():
-        member_path = target_dir / member.name
-        if not is_within_dir(target_dir, member_path):
-            raise ValueError(f"Unsafe tar member path: {member.name}")
-    tar_ref.extractall(target_dir)
-
-
 def extract_local_archive(archive_path: str, projects_dir: str) -> str:
     target_dir = create_unique_dir(Path(archive_project_dir(archive_path, projects_dir)))
     try:
-        if zipfile.is_zipfile(archive_path):
-            with zipfile.ZipFile(archive_path) as archive:
-                safe_extract_zip(archive, target_dir)
-        elif tarfile.is_tarfile(archive_path):
-            with tarfile.open(archive_path, "r:*") as archive:
-                safe_extract_tar(archive, target_dir)
-        else:
-            raise ValueError(f"Unsupported archive format: {archive_path}")
+        extract_archive(Path(archive_path), target_dir)
     except Exception:
         shutil.rmtree(target_dir)
         raise
@@ -149,6 +117,9 @@ def load_runtime_config(
     if overrides.get("update_term") is not None:
         config["update_term"] = overrides["update_term"]
 
+    if overrides.get("category"):
+        config.setdefault("category", {}).update(overrides["category"])
+
     extra_papers = overrides.get("paper_list") or []
     if overrides.get("replace_paper_list"):
         config["paper_list"] = list(extra_papers)
@@ -189,19 +160,15 @@ def prepare_projects(
             record_failure(item, "Invalid arXiv ID or URL.", arxiv=True)
 
     project_items = [item for item in (project_items or []) if item]
-    if paper_list:
-        downloaded = set(batch_download_arxiv_tex(paper_list, projects_dir))
-        extraction_errors = extract_compressed_files(projects_dir)
-        for paper in dict.fromkeys(paper_list):
-            path = os.path.join(projects_dir, paper)
-            if path not in downloaded:
-                record_failure(paper, "Could not download the TeX source.", arxiv=True)
-            elif path + ".tar.gz" in extraction_errors:
-                record_failure(paper, extraction_errors[path + ".tar.gz"], arxiv=True)
-            else:
-                projects.append(path)
-        if not config.get("user_term"):
-            config["category"] = get_arxiv_category(paper_list)
+    categories = config.setdefault("category", {})
+    for paper in dict.fromkeys(paper_list):
+        try:
+            path = prepare_arxiv_source(paper, projects_dir)
+            if not config.get("user_term") and paper not in categories:
+                categories.update(get_arxiv_category([paper]))
+            projects.append(path)
+        except Exception as exc:
+            record_failure(paper, exc, arxiv=True)
 
     for item in project_items:
         path = item
@@ -220,13 +187,13 @@ def prepare_projects(
         if not all_existing:
             raise ValueError("No input provided. Use --arxiv or --project. To process existing projects, pass --all-existing.")
         log_message("No explicit inputs. Processing all existing projects in the specified directory.")
-        existing_dirs = set(get_profect_dirs(projects_dir))
         extraction_errors = extract_compressed_files(projects_dir)
-        failed_dirs = set()
         for archive, reason in extraction_errors.items():
-            record_failure(archive, reason)
-            failed_dirs.add(archive_project_dir(archive, os.path.dirname(archive)))
-        projects = [path for path in get_profect_dirs(projects_dir) if path in existing_dirs or path not in failed_dirs]
+            # Nested archives belong to the containing paper. Its workflow
+            # determines whether the missing asset actually prevents translation.
+            if Path(archive).parent == Path(projects_dir):
+                record_failure(archive, reason)
+        projects = get_profect_dirs(projects_dir)
         if not projects and not failures:
             raise ValueError("No projects found. Check 'tex_sources_dir' and 'paper_list' in config.")
 
@@ -250,17 +217,24 @@ def run_projects(
         if event_callback:
             event_callback({"type": "project_error", **entry})
 
+    sources = resolve_path(config.get("tex_sources_dir", "tex source"))
+    paper_by_path = {str(sources / paper): paper for paper in extract_arxiv_ids(config.get("paper_list", []))}
     for idx, project_dir in enumerate(projects, start=len(preparation_failures) + 1):
         project_name = os.path.basename(project_dir)
         log_message(f"[{idx}/{total_projects}] Processing {project_name}")
         project = {
             "index": idx, "total": total_projects, "project_name": project_name, "project_dir": project_dir,
         }
+        paper = paper_by_path.get(project_dir)
+        if paper:
+            project["arxiv_id"] = paper
+            if paper in config.get("category", {}):
+                project["categories"] = config["category"][paper]
         if event_callback:
             event_callback({"type": "project_start", **project})
         coordinator = None
         try:
-            coordinator = CoordinatorAgent(config=config, project_dir=project_dir, output_dir=output_dir)
+            coordinator = CoordinatorAgent(config={**config, "arxiv_id": paper}, project_dir=project_dir, output_dir=output_dir)
             project["pdf_path"] = coordinator.workflow_latextrans()
         except Exception as e:
             log_message(f"Error processing project {project_name}: {e}")

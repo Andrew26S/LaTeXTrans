@@ -50,7 +50,7 @@ class TranslatorAgent(BaseToolAgent):
         self.retry_base_delay = 5.0
         self.user_term = config.get("user_term", None)
         self.target_language = config.get("target_language", "ch")
-        self.category = config.get("category", None)
+        self.category = config.get("category", {})
         self.project_dir = project_dir  # Project path for parsing
         self.output_dir = output_dir  # Output directory for parsed files
         self.fail_section_nums = []
@@ -728,7 +728,7 @@ class TranslatorAgent(BaseToolAgent):
             df = pd.read_csv(self.user_term, header=None, names=['English Term', 'Chinese Translation'])
             self.term_dict.update(zip(df['English Term'], df['Chinese Translation']))
         else:
-            arxiv_id = os.path.basename(self.project_dir)
+            arxiv_id = self.config.get("arxiv_id") or os.path.basename(self.project_dir)
             if self.category.get(arxiv_id):
                 term_dict_loaded = False
                 for category in self.category[arxiv_id]:

@@ -6,10 +6,12 @@ from pylatexenc.latex2text import LatexNodes2Text
 import os
 import re
 import json
+import gzip
 import zipfile
 import tarfile
+import tempfile
+import shutil
 import regex
-import os
 import requests
 from bs4 import BeautifulSoup
 from typing import List
@@ -43,7 +45,7 @@ def _safe_extract_tar(tar_ref: tarfile.TarFile, extract_path: Path) -> None:
         member_path = extract_path / member.name
         if not _is_within_dir(extract_path, member_path):
             raise ValueError(f"Unsafe tar member path: {member.name}")
-    tar_ref.extractall(extract_path)
+    tar_ref.extractall(extract_path, filter="data")
 
 def get_pattern_command_full(name, n=None):
     pattern = rf'\\({name})'
@@ -60,40 +62,62 @@ def get_pattern_command_full(name, n=None):
         pattern += r'(?=[^a-zA-Z])'
     return pattern
 
+def extract_archive(archive: Path, destination: Path) -> None:
+    if zipfile.is_zipfile(archive):
+        with zipfile.ZipFile(archive) as source:
+            _safe_extract_zip(source, destination)
+    elif tarfile.is_tarfile(archive):
+        with tarfile.open(archive, "r:*") as source:
+            _safe_extract_tar(source, destination)
+    else:
+        raise ValueError(f"Unrecognized archive format: {archive}")
+
+
+class InvalidSourceArchive(ValueError):
+    """The cached bytes cannot supply a usable source tree."""
+
+
+def _unpack_cached_archive(archive: Path, target: Path, *, require_tex=False) -> None:
+    # Validate every member before publishing any of the extracted files.
+    with tempfile.TemporaryDirectory(prefix=".latextrans-stage-", dir=target.parent) as tmp:
+        staged = Path(tmp, "source")
+        staged.mkdir()
+        try:
+            extract_archive(archive, staged)
+        except (ValueError, zipfile.BadZipFile, tarfile.TarError, EOFError, gzip.BadGzipFile) as exc:
+            raise InvalidSourceArchive(str(exc)) from exc
+        if require_tex and not any(path.is_file() for path in staged.rglob("*.tex")):
+            raise InvalidSourceArchive("Archive contains no TeX source.")
+        if target.exists():
+            # A cached project may already contain the original PDF or local files.
+            for member in staged.rglob("*"):
+                if not _is_within_dir(target, target / member.relative_to(staged)):
+                    raise ValueError(f"Unsafe extraction destination: {member.relative_to(staged)}")
+            shutil.copytree(staged, target, dirs_exist_ok=True, symlinks=True)
+        else:
+            staged.rename(target)
+    archive.unlink(missing_ok=True)
+
+
 def extract_compressed_files(folder_path):
-    """
-    Traverse the given folder and extract all compressed files (zip, tar, tar.gz, etc.).
-    After extraction, delete the source compressed files.
-    
-    Args:
-        folder_path (str): Path to the folder containing compressed files.
-    """
+    """Extract project assets, retaining unreadable archives and their diagnostics."""
     failures = {}
-    for root, _, files in os.walk(folder_path):
+    for root, directories, files in os.walk(folder_path):
+        directories[:] = [d for d in directories if not d.startswith(".latextrans-")]
         for file in files:
-            file_path = os.path.join(root, file)
+            archive = Path(root, file)
+            suffix = next((s for s in (".tar.gz", ".zip", ".tar", ".tgz") if file.lower().endswith(s)), None)
+            if not suffix:
+                continue
             try:
-                if zipfile.is_zipfile(file_path):
-                    with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                        extract_path = Path(root) / file.replace('.zip', '')
-                        extract_path.mkdir(parents=True, exist_ok=True)
-                        _safe_extract_zip(zip_ref, extract_path)
-                        log_message(f"Extracted {file} to {extract_path}")
-                    os.remove(file_path)
-                elif tarfile.is_tarfile(file_path):
-                    with tarfile.open(file_path, 'r:*') as tar_ref:
-                        stem = file[:-7] if file.lower().endswith(".tar.gz") else Path(file).stem
-                        extract_path = Path(root) / stem
-                        extract_path.mkdir(parents=True, exist_ok=True)
-                        _safe_extract_tar(tar_ref, extract_path)
-                        log_message(f"Extracted {file} to {extract_path}")
-                    os.remove(file_path)
-                elif file.lower().endswith((".tar.gz", ".tgz", ".tar", ".zip")):
-                    raise ValueError("Unrecognized archive format.")
-            except Exception as e:
-                failures[file_path] = str(e)
-                log_message(f"[SKIP] Failed to extract {file_path}: {e}")
+                target = archive.with_name(file[:-len(suffix)])
+                _unpack_cached_archive(archive, target)
+                log_message(f"Extracted {archive} to {target}")
+            except Exception as exc:
+                failures[str(archive)] = str(exc)
+                log_message(f"[SKIP] Failed to extract {archive}: {exc}")
     return failures
+
 
 def get_profect_dirs(folder_path):
     """
@@ -107,7 +131,7 @@ def get_profect_dirs(folder_path):
     """
     projects = []
     for d in os.listdir(folder_path):
-        if os.path.isdir(os.path.join(folder_path, d)):
+        if not d.startswith(".latextrans-") and os.path.isdir(os.path.join(folder_path, d)):
             project_path = os.path.join(folder_path, d)
             projects.append(project_path)
     return projects
@@ -838,86 +862,74 @@ def download_tex(arxiv_id: str, tex_url: str, save_dir: str, headers: dict):
     """
     下载 TeX 源码 .tar.gz 文件
     """
-    # os.makedirs(save_dir, exist_ok=True)
-    file_path = os.path.join(save_dir, f"{arxiv_id}.tar.gz")
-
+    archive = Path(save_dir, f"{arxiv_id}.tar.gz")
+    archive.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with requests.get(tex_url, headers=headers, stream=True, timeout=20) as r:
-            r.raise_for_status()
-            total_size = int(r.headers.get("Content-Length", 0))
-
+        with requests.get(tex_url, headers=headers, stream=True, timeout=20) as response:
+            response.raise_for_status()
+            total_size = int(response.headers.get("Content-Length", 0))
             report_progress(0, f"Downloading {arxiv_id}...")
-
-            last_report_ts = 0.0
-            with open(file_path, "wb") as f:
+            with tempfile.TemporaryDirectory(dir=archive.parent, prefix=".latextrans-stage-") as tmp:
+                incoming = Path(tmp, "download")
                 downloaded = 0
-                for chunk in r.iter_content(8192):
-                    if chunk:
-                        f.write(chunk)
+                last_report = 0.0
+                with incoming.open("wb") as stream:
+                    for chunk in response.iter_content(8192):
+                        stream.write(chunk)
                         downloaded += len(chunk)
-
-                        # Update with throttling to avoid noisy terminal output.
-                        if total_size > 0:
-                            now = time.time()
-                            if now - last_report_ts >= 0.5 or downloaded == total_size:
-
-                                report_progress(
-                                    int(100 * downloaded / total_size),
-                                    f"Downloading {arxiv_id}: {downloaded/1024/1024:.2f}MB / {total_size/1024/1024:.2f}MB"
-                                )
-
-                                last_report_ts = now
-
-        log_message(f"[SUCCESS] {arxiv_id} successfully downloaded to {file_path}.")
-
-        return os.path.join(save_dir, f"{arxiv_id}")
-
-    except requests.RequestException as e:
-
-        log_message(f"[FAIL] {arxiv_id} download failed: {e}")
-
+                        now = time.monotonic()
+                        if total_size and (now - last_report >= 0.5 or downloaded == total_size):
+                            report_progress(min(100, 100 * downloaded // total_size), f"Downloading {arxiv_id}...")
+                            last_report = now
+                incoming.replace(archive)
+    except requests.RequestException as exc:
+        log_message(f"[FAIL] {arxiv_id} download failed: {exc}")
         return None
+    log_message(f"[SUCCESS] {arxiv_id} successfully downloaded to {archive}.")
+    return str(Path(save_dir, arxiv_id))
+
+
+def prepare_arxiv_source(arxiv_id: str, save_dir: str) -> str:
+    project = Path(save_dir, arxiv_id)
+    archive = Path(save_dir, f"{arxiv_id}.tar.gz")
+    headers = {"User-Agent": "Mozilla/5.0"}
+    cached = is_already_downloaded(arxiv_id, save_dir)
+    if not cached:
+        url = get_tex_url(arxiv_id, headers)
+        downloaded = url and download_tex(arxiv_id, url, save_dir, headers)
+        try:
+            response = requests.get(f"https://arxiv.org/pdf/{arxiv_id}.pdf", headers=headers, timeout=20)
+            response.raise_for_status()
+            project.mkdir(parents=True, exist_ok=True)
+            (project / f"{project.name}.pdf").write_bytes(response.content)
+        except (OSError, requests.RequestException) as exc:
+            log_message(f"[ERROR] Failed to download PDF for {arxiv_id}: {exc}")
+        if not downloaded:
+            raise ValueError("Could not download the TeX source.")
+    if archive.is_file():
+        try:
+            _unpack_cached_archive(archive, project, require_tex=True)
+        except InvalidSourceArchive:
+            # Older releases unpacked in place. Keep legacy partial files out of
+            # both the cache lookup and project discovery, without deleting them.
+            if any(project.rglob("*.tex")):
+                backup = tempfile.mkdtemp(dir=project.parent, prefix=".latextrans-invalid-")
+                project.rename(Path(backup, project.name))
+            archive.unlink(missing_ok=True)
+            raise
+    extract_compressed_files(project)
+    return str(project)
+
 
 def batch_download_arxiv_tex(arxiv_ids: List[str], save_dir: str = "./tex_sources"):
-    """
-    批量下载多个 arXiv 论文的 TeX 源码
-    """
     source_dirs = []
-    headers = {"User-Agent": "Mozilla/5.0"}
-    for arxiv_id in arxiv_ids:
-        if is_already_downloaded(arxiv_id, save_dir):
-            source_dirs.append(os.path.join(save_dir, arxiv_id))
-            log_message(f"[SkIP] Already downloaded: {arxiv_id}")
-            continue
-
-        tex_url = get_tex_url(arxiv_id, headers)
-        if tex_url:
-            dir = download_tex(arxiv_id, tex_url, save_dir, headers)
-            if dir:
-                source_dirs.append(dir)
-            else:
-                log_message(f"[SKIP] Source download failed for {arxiv_id}, skip TeX processing.")
-        else:
-            log_message(f"[SKIP] No TeX source found for {arxiv_id}. Please check the arXiv ID or the availability of the source.")
-
-            # 下载PDF文件
-        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-        pdf_path = os.path.join(save_dir, arxiv_id, f"{arxiv_id}.pdf")
-        os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
-
+    for paper in arxiv_ids:
         try:
-            response = requests.get(pdf_url, headers=headers)
-            response.raise_for_status()
-            with open(pdf_path, 'wb') as f:
-                f.write(response.content)
-
-            log_message(f"[SUCCESS] Downloaded PDF for {arxiv_id}")
-
-        except Exception as e:
-
-            log_message(f"[ERROR] Failed to download PDF for {arxiv_id}: {str(e)}")
-
+            source_dirs.append(prepare_arxiv_source(paper, save_dir))
+        except Exception as exc:
+            log_message(f"[SKIP] Failed to prepare {paper}: {exc}")
     return source_dirs
+
 
 def get_arxiv_category(arxiv_ids: List[str]) -> dict:
     results = {}

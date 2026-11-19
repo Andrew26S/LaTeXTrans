@@ -186,11 +186,15 @@ def _append_history(result: Dict[str, Any], params: Dict[str, Any], inputs: Dict
     streamlit_backend.session_state.job_history = streamlit_backend.session_state.job_history[:12]
 
 
-def _retry_inputs(failures: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-    return {
+def _retry_inputs(failures: List[Dict[str, Any]]) -> Dict[str, Any]:
+    inputs = {
         "paper_list": [item["arxiv_id"] for item in failures if "arxiv_id" in item],
-        "project_items": [item["project_dir"] for item in failures if "project_dir" in item],
+        "project_items": [item["project_dir"] for item in failures if "project_dir" in item and "arxiv_id" not in item],
     }
+    categories = {item["arxiv_id"]: item["categories"] for item in failures if "categories" in item}
+    if categories:
+        inputs["category"] = categories
+    return inputs
 
 
 def _queue_retry(params, inputs, title):
@@ -312,7 +316,7 @@ def _render_history() -> None:
             streamlit_backend.code("\n".join(item["logs"]), language="text")
 
 
-def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], title: str, retry: bool = False) -> None:
+def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, Any], title: str, retry: bool = False) -> None:
     streamlit_backend.subheader(title)
     status_col, stats_col = streamlit_backend.columns([1.6, 1], gap="large")
     with status_col:
@@ -345,6 +349,7 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], tit
     overrides = {
         "paper_list": inputs["paper_list"],
         "replace_paper_list": retry,
+        "category": inputs.get("category"),
         "model": params["model"],
         "url": params["url"],
         "key": params["key"],
