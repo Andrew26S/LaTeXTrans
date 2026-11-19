@@ -222,6 +222,19 @@ def _append_history(result: Dict[str, Any], params: Dict[str, Any], inputs: Dict
     streamlit_backend.session_state.job_history = streamlit_backend.session_state.job_history[:12]
 
 
+def _retry_inputs(failures: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    return {
+        "paper_list": [item["arxiv_id"] for item in failures if "arxiv_id" in item],
+        "project_items": [item["project_dir"] for item in failures if "project_dir" in item],
+    }
+
+
+def _queue_retry(params, inputs, title):
+    streamlit_backend.session_state.retry_payload = {
+        "params": dict(params), "inputs": inputs, "title": title,
+    }
+
+
 def _render_result_files(result: Dict[str, Any], params: Dict[str, Any], inputs: Dict[str, List[str]]) -> None:
     output_dir = Path(result["output_dir"])
     completed = result["completed_projects"]
@@ -259,19 +272,10 @@ def _render_result_files(result: Dict[str, Any], params: Dict[str, Any], inputs:
     if failed:
         for project in failed:
             streamlit_backend.text(f"{project['project_name']}: {project['error']}")
-        failed_paths = [item["project_dir"] for item in failed]
-        retry_payload = {
-            "params": dict(params),
-            "inputs": {
-                "paper_list": [],
-                "project_items": failed_paths,
-            },
-            "all_existing": False,
-            "title": f"Retry {len(failed_paths)} failed project(s)",
-        }
-        if streamlit_backend.button("Retry Failed Projects", use_container_width=True):
-            streamlit_backend.session_state.retry_payload = retry_payload
-            streamlit_backend.rerun()
+        streamlit_backend.button(
+            "Retry Failed Projects", use_container_width=True, on_click=_queue_retry,
+            args=(params, _retry_inputs(failed), f"Retry {len(failed)} failed project(s)"),
+        )
 
     _append_history(result=result, params=params, inputs=inputs, logs=streamlit_backend.session_state.current_run_logs)
 
@@ -305,30 +309,20 @@ def _render_history() -> None:
                     streamlit_backend.code(pdf, language="text")
 
             if item["failed_projects"]:
-                failed_dirs = [entry["project_dir"] for entry in item["failed_projects"]]
+                retry_inputs = _retry_inputs(item["failed_projects"])
                 streamlit_backend.write("Failed Projects")
-                streamlit_backend.code("\n".join(failed_dirs), language="text")
-                if streamlit_backend.button(
-                    f"Retry Failed Projects from This Run",
-                    key=f"retry_history_{index}",
-                    use_container_width=True,
-                ):
-                    streamlit_backend.session_state.retry_payload = {
-                        "params": dict(item["params"]),
-                        "inputs": {
-                            "paper_list": [],
-                            "project_items": failed_dirs,
-                        },
-                        "all_existing": False,
-                        "title": f"Retry failed projects from {item['timestamp']}",
-                    }
-                    streamlit_backend.rerun()
+                streamlit_backend.code("\n".join(retry_inputs["project_items"] + retry_inputs["paper_list"]), language="text")
+                streamlit_backend.button(
+                    "Retry Failed Projects from This Run",
+                    key=f"retry_history_{index}", use_container_width=True, on_click=_queue_retry,
+                    args=(item["params"], retry_inputs, f"Retry failed projects from {item['timestamp']}"),
+                )
 
             streamlit_backend.write("Recent Logs")
             streamlit_backend.code("\n".join(item["logs"]), language="text")
 
 
-def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], title: str) -> None:
+def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], title: str, retry: bool = False) -> None:
     streamlit_backend.subheader(title)
     status_col, stats_col = streamlit_backend.columns([1.6, 1], gap="large")
     with status_col:
@@ -368,10 +362,12 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], tit
                 overall_bar.progress(event["index"] / event["total"])
         elif event["type"] == "project_error":
             stats_placeholder.metric("Projects", f"{event['index']}/{event['total']}")
+            overall_bar.progress(event["index"] / event["total"])
             stage_text.markdown(f"**Stage** Error in `{event['project_name']}`: {event['error']}")
 
     overrides = {
         "paper_list": inputs["paper_list"],
+        "replace_paper_list": retry,
         "model": params["model"],
         "url": params["url"],
         "key": params["key"],
@@ -394,7 +390,7 @@ def _run_streamlit_job(params: Dict[str, Any], inputs: Dict[str, List[str]], tit
                 config_path=params["config_path"],
                 overrides=overrides,
                 project_items=inputs["project_items"],
-                all_existing=params["all_existing"],
+                all_existing=params["all_existing"] and not retry,
                 event_callback=on_event,
             )
     except Exception as exc:
@@ -448,6 +444,7 @@ def main() -> None:
             params=retry_payload["params"],
             inputs=retry_payload["inputs"],
             title=retry_payload["title"],
+            retry=True,
         )
         _render_history()
         return

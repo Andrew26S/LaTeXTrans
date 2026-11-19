@@ -1,4 +1,5 @@
 import os
+import shutil
 import tarfile
 import zipfile
 from pathlib import Path
@@ -51,15 +52,16 @@ def archive_project_dir(archive_path: str, projects_dir: str) -> str:
     return os.path.join(projects_dir, stem)
 
 
-def ensure_unique_dir(base_dir: Path) -> Path:
-    if not base_dir.exists():
-        return base_dir
-    index = 1
+def create_unique_dir(base_dir: Path) -> Path:
+    index = 0
+    candidate = base_dir
     while True:
-        candidate = base_dir.parent / f"{base_dir.name}_{index}"
-        if not candidate.exists():
+        try:
+            candidate.mkdir(parents=True)
             return candidate
-        index += 1
+        except FileExistsError:
+            index += 1
+            candidate = base_dir.with_name(f"{base_dir.name}_{index}")
 
 
 def is_within_dir(base_dir: Path, target_path: Path) -> bool:
@@ -87,20 +89,20 @@ def safe_extract_tar(tar_ref: tarfile.TarFile, target_dir: Path) -> None:
 
 
 def extract_local_archive(archive_path: str, projects_dir: str) -> str:
-    target_dir = ensure_unique_dir(Path(archive_project_dir(archive_path, projects_dir)))
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    if zipfile.is_zipfile(archive_path):
-        with zipfile.ZipFile(archive_path, "r") as zip_ref:
-            safe_extract_zip(zip_ref, target_dir)
-        return str(target_dir)
-
-    if tarfile.is_tarfile(archive_path):
-        with tarfile.open(archive_path, "r:*") as tar_ref:
-            safe_extract_tar(tar_ref, target_dir)
-        return str(target_dir)
-
-    raise ValueError(f"Unsupported archive format: {archive_path}")
+    target_dir = create_unique_dir(Path(archive_project_dir(archive_path, projects_dir)))
+    try:
+        if zipfile.is_zipfile(archive_path):
+            with zipfile.ZipFile(archive_path) as archive:
+                safe_extract_zip(archive, target_dir)
+        elif tarfile.is_tarfile(archive_path):
+            with tarfile.open(archive_path, "r:*") as archive:
+                safe_extract_tar(archive, target_dir)
+        else:
+            raise ValueError(f"Unsupported archive format: {archive_path}")
+    except Exception:
+        shutil.rmtree(target_dir)
+        raise
+    return str(target_dir)
 
 
 def split_cli_items(values: Sequence[str]) -> List[str]:
@@ -147,7 +149,9 @@ def load_runtime_config(
         config["update_term"] = overrides["update_term"]
 
     extra_papers = overrides.get("paper_list") or []
-    if extra_papers:
+    if overrides.get("replace_paper_list"):
+        config["paper_list"] = list(extra_papers)
+    elif extra_papers:
         config.setdefault("paper_list", [])
         config["paper_list"].extend(extra_papers)
 
@@ -158,7 +162,7 @@ def prepare_projects(
     config: Dict[str, Any],
     project_items: Optional[Iterable[str]] = None,
     all_existing: bool = False,
-) -> tuple[List[str], Dict[str, Any], str, str]:
+) -> tuple[List[str], List[Dict[str, Any]], str, str]:
     input_items = config.get("paper_list", [])
     projects_dir = str(resolve_path(config.get("tex_sources_dir", "tex source")))
     output_dir = str(resolve_path(config.get("output_dir", "outputs")))
@@ -166,45 +170,67 @@ def prepare_projects(
     os.makedirs(projects_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
-    paper_list = extract_arxiv_ids(input_items)
+    projects = []
+    failures = []
+
+    def record_failure(source, error, *, arxiv=False):
+        failure = {"project_name": source if arxiv else Path(source).name, "error": str(error)}
+        failure["arxiv_id" if arxiv else "project_dir"] = source
+        failures.append(failure)
+        print(f"Error preparing {source}: {error}")
+
+    paper_list = []
+    for item in input_items:
+        ids = extract_arxiv_ids([item])
+        if ids:
+            paper_list.extend(ids)
+        else:
+            record_failure(item, "Invalid arXiv ID or URL.", arxiv=True)
+
     project_items = [item for item in (project_items or []) if item]
+    if paper_list:
+        downloaded = set(batch_download_arxiv_tex(paper_list, projects_dir))
+        extraction_errors = extract_compressed_files(projects_dir)
+        for paper in dict.fromkeys(paper_list):
+            path = os.path.join(projects_dir, paper)
+            if path not in downloaded:
+                record_failure(paper, "Could not download the TeX source.", arxiv=True)
+            elif path + ".tar.gz" in extraction_errors:
+                record_failure(paper, extraction_errors[path + ".tar.gz"], arxiv=True)
+            else:
+                projects.append(path)
+        if not config.get("user_term"):
+            config["category"] = get_arxiv_category(paper_list)
 
-    if paper_list or project_items:
-        projects: List[str] = []
+    for item in project_items:
+        path = item
+        try:
+            path = str(resolve_path(item))
+            if os.path.isdir(path):
+                projects.append(path)
+            elif is_local_archive(path):
+                projects.append(extract_local_archive(path, projects_dir))
+            else:
+                record_failure(path, "Invalid local project path.")
+        except Exception as e:
+            record_failure(path, e)
 
-        if paper_list:
-            projects.extend(batch_download_arxiv_tex(paper_list, projects_dir))
-            if not config.get("user_term"):
-                config["category"] = get_arxiv_category(paper_list)
-            extract_compressed_files(projects_dir)
-
-        for project_path in project_items:
-            resolved_project_path = str(resolve_path(project_path))
-            if os.path.isdir(resolved_project_path):
-                projects.append(os.path.abspath(resolved_project_path))
-                continue
-            if is_local_archive(resolved_project_path):
-                try:
-                    projects.append(extract_local_archive(resolved_project_path, projects_dir))
-                except Exception as e:
-                    print(f"[SKIP] Failed to extract local archive {project_path}: {e}")
-                continue
-            print(f"[SKIP] Invalid local project path: {project_path}")
-    elif all_existing:
+    if not input_items and not project_items:
+        if not all_existing:
+            raise ValueError("No input provided. Use --arxiv or --project. To process existing projects, pass --all-existing.")
         print("No explicit inputs. Processing all existing projects in the specified directory.")
-        extract_compressed_files(projects_dir)
-        projects = get_profect_dirs(projects_dir)
-        if not projects:
+        existing_dirs = set(get_profect_dirs(projects_dir))
+        extraction_errors = extract_compressed_files(projects_dir)
+        failed_dirs = set()
+        for archive, reason in extraction_errors.items():
+            record_failure(archive, reason)
+            failed_dirs.add(archive_project_dir(archive, os.path.dirname(archive)))
+        projects = [path for path in get_profect_dirs(projects_dir) if path in existing_dirs or path not in failed_dirs]
+        if not projects and not failures:
             raise ValueError("No projects found. Check 'tex_sources_dir' and 'paper_list' in config.")
-    else:
-        raise ValueError("No input provided. Use --arxiv or --project. To process existing projects, pass --all-existing.")
 
-    projects = [os.path.abspath(p) for p in projects if isinstance(p, (str, os.PathLike))]
-    projects = list(dict.fromkeys(projects))
-    if not projects:
-        raise ValueError("No valid TeX projects available for processing.")
-
-    return projects, config, projects_dir, output_dir
+    projects = list(dict.fromkeys(os.path.abspath(p) for p in projects))
+    return projects, failures, projects_dir, output_dir
 
 
 def run_projects(
@@ -212,11 +238,18 @@ def run_projects(
     projects: Sequence[str],
     output_dir: str,
     event_callback: Optional[ProjectEventCallback] = None,
+    preparation_failures: Sequence[Dict[str, Any]] = (),
 ) -> Dict[str, List[Dict[str, Any]]]:
     completed_projects: List[Dict[str, Any]] = []
     failed_projects: List[Dict[str, Any]] = []
-    total_projects = len(projects)
-    for idx, project_dir in enumerate(projects, start=1):
+    total_projects = len(projects) + len(preparation_failures)
+    for idx, failure in enumerate(preparation_failures, start=1):
+        entry = {**failure, "index": idx, "total": total_projects}
+        failed_projects.append(entry)
+        if event_callback:
+            event_callback({"type": "project_error", **entry})
+
+    for idx, project_dir in enumerate(projects, start=len(preparation_failures) + 1):
         project_name = os.path.basename(project_dir)
         print(f"[{idx}/{total_projects}] Processing {project_name}")
         if event_callback:
@@ -295,7 +328,7 @@ def run_translation(
     event_callback: Optional[ProjectEventCallback] = None,
 ) -> Dict[str, Any]:
     config = load_runtime_config(config_path=config_path, overrides=overrides)
-    projects, config, projects_dir, output_dir = prepare_projects(
+    projects, preparation_failures, projects_dir, output_dir = prepare_projects(
         config=config,
         project_items=project_items,
         all_existing=all_existing,
@@ -305,6 +338,7 @@ def run_translation(
         projects=projects,
         output_dir=output_dir,
         event_callback=event_callback,
+        preparation_failures=preparation_failures,
     )
     return {
         "config": config,
