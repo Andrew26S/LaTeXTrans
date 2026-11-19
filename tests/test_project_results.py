@@ -251,7 +251,7 @@ _render_result_files(st.session_state.result, {"project_items": [], "overrides":
 """)
             app.session_state.current_run_logs = []
             app.session_state.result = {
-                "projects": ["ok", "partial"], "output_dir": directory, "pdfs": [str(success)], "config": {},
+                "projects": ["ok", "partial"], "output_dir": directory, "pdfs": [str(success)], "config": {}, "retry_request": {},
                 "completed_projects": [{"project_name": "ok", "pdf_path": str(success)}],
                 "failed_projects": [{"index": 2, "project_name": "partial", "project_dir": "partial",
                                      "error": "failed", "compile_attempts": attempts}],

@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 import streamlit as streamlit_backend
 
 from src.configuration import DEFAULT_LOCAL_CONFIG_PATH, load_runtime_config
-from src.runtime import build_retry_request, run_translation, split_multivalue_text
+from src.runtime import run_translation, split_multivalue_text
 from src.utils.progress import use_reporter
 
 
@@ -30,15 +30,8 @@ def _ensure_session_state() -> None:
     streamlit_backend.session_state.setdefault("retry_payload", None)
     # Streamlit keeps existing session entries across application reloads.
     for item in streamlit_backend.session_state.job_history:
-        if "request" not in item:
-            params = dict(item["params"])
-            inputs = item["inputs"]
-            item["request"] = {
-                "config_path": params.pop("config_path"),
-                "all_existing": params.pop("all_existing", False),
-                "project_items": inputs["project_items"],
-                "overrides": params,
-            }
+        inputs = item["inputs"]
+        if isinstance(inputs, dict):
             item["inputs"] = inputs["paper_list"] + inputs["project_items"]
 
 
@@ -154,7 +147,7 @@ def _collect_inputs() -> Dict[str, List[str]]:
 def _append_history(result, request, logs):
     history_item = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "request": request,
+        "retry_request": result["retry_request"],
         "inputs": list(result["config"].get("paper_list", [])) + request["project_items"],
         "output_dir": result["output_dir"],
         "completed_projects": result["completed_projects"],
@@ -166,8 +159,7 @@ def _append_history(result, request, logs):
     streamlit_backend.session_state.job_history = streamlit_backend.session_state.job_history[:12]
 
 
-def _queue_retry(request, failures, title):
-    retry = build_retry_request(failures, config_path=request["config_path"], overrides=request["overrides"])
+def _queue_retry(retry, title):
     streamlit_backend.session_state.retry_payload = {"request": retry, "title": title}
 
 
@@ -237,7 +229,7 @@ def _render_result_files(result, request) -> None:
             streamlit_backend.text(f"{project['project_name']}: {project['error']}")
         streamlit_backend.button(
             "Retry Failed Projects", use_container_width=True, on_click=_queue_retry,
-            args=(request, failed, f"Retry {len(failed)} failed project(s)"),
+            args=(result["retry_request"], f"Retry {len(failed)} failed project(s)"),
         )
 
     _append_history(result, request, streamlit_backend.session_state.current_run_logs)
@@ -272,11 +264,14 @@ def _render_history() -> None:
             if item["failed_projects"]:
                 streamlit_backend.write("Failed Projects")
                 streamlit_backend.code("\n".join(p["project_name"] for p in item["failed_projects"]), language="text")
-                streamlit_backend.button(
-                    "Retry Failed Projects from This Run",
-                    key=f"retry_history_{index}", use_container_width=True, on_click=_queue_retry,
-                    args=(item["request"], item["failed_projects"], f"Retry failed projects from {item['timestamp']}"),
-                )
+                if item.get("retry_request"):
+                    streamlit_backend.button(
+                        "Retry Failed Projects from This Run",
+                        key=f"retry_history_{index}", use_container_width=True, on_click=_queue_retry,
+                        args=(item["retry_request"], f"Retry failed projects from {item['timestamp']}"),
+                    )
+                else:
+                    streamlit_backend.caption("Start a new translation to select a provider for this older run.")
 
             streamlit_backend.write("Recent Logs")
             streamlit_backend.code("\n".join(item["logs"]), language="text")
@@ -359,7 +354,10 @@ def main() -> None:
 
     retry_payload = streamlit_backend.session_state.pop("retry_payload", None)
     if retry_payload:
-        _run_streamlit_job(**retry_payload)
+        if "llm_config" in retry_payload.get("request", {}).get("overrides", {}):
+            _run_streamlit_job(**retry_payload)
+        else:
+            streamlit_backend.warning("Start a new translation to select a provider for this older run.")
     elif streamlit_backend.button("Start Translation", type="primary", use_container_width=True, disabled=request is None):
         request["overrides"]["paper_list"] = inputs["paper_list"]
         request["project_items"] = inputs["project_items"]

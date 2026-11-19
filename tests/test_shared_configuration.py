@@ -65,14 +65,21 @@ class SharedConfigurationTests(unittest.TestCase):
                 self.assertEqual(agent.call_args.kwargs, gui_args)
 
     def test_current_and_history_retry_use_the_shared_request(self):
+        for field, value in (("key", "override-key"), ("url", "https://override.invalid/chat")):
+            with self.subTest(field=field):
+                self.check_history_retry(field, value)
+
+    def check_history_retry(self, field, value):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / "config.toml"
             papers = ["2501.12948", "2501.12949"]
-            path.write_text(toml.dumps({
+            config = {
                 "paper_list": papers, "tex_sources_dir": str(root / "sources"),
                 "output_dir": str(root / "out"), "category": {papers[0]: ["cs.AI"], papers[1]: []},
-            }))
+                "llm_config": {"model": "selected", "api_key": "first-key", "base_url": "https://first.invalid/chat"},
+            }
+            path.write_text(toml.dumps(config))
             app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "src/gui/streamlit_app.py"))
             with (
                 patch("src.configuration.DEFAULT_LOCAL_CONFIG_PATH", str(path)),
@@ -82,17 +89,21 @@ class SharedConfigurationTests(unittest.TestCase):
             ):
                 agent.return_value.workflow_latextrans.side_effect = [ValueError("failed"), "ok.pdf", "ok.pdf", "ok.pdf"]
                 app.run(timeout=30)
-                app.text_input(key=f"{path}:model").set_value("selected").run()
+                app.text_input(key=f"{path}:{field}").set_value(value).run()
                 next(button for button in app.button if button.label == "Start Translation").click().run()
                 failures = app.session_state.job_history[0]["failed_projects"]
                 self.assertEqual([f["arxiv_id"] for f in failures], papers[:1])
+                original_provider = dict(agent.call_args.kwargs["config"]["llm_config"])
+                config["llm_config"] = {"base_url": "https://second.invalid/chat", "api_key": "new-key", "model": "new"}
+                path.write_text(toml.dumps(config))
                 for label in ("Retry Failed Projects", "Retry Failed Projects from This Run"):
                     next(button for button in app.button if button.label == label).click().run()
                     self.assertFalse(app.exception)
                     self.assertEqual(run.call_args.kwargs["overrides"], {
-                        "model": "selected", "replace_paper_list": True,
+                        "llm_config": original_provider, "replace_paper_list": True,
                         "paper_list": papers[:1], "category": {papers[0]: ["cs.AI"]},
                     })
+                    self.assertEqual(agent.call_args.kwargs["config"]["llm_config"], original_provider)
                     self.assertEqual(app.session_state.job_history[0]["inputs"], papers[:1])
                     self.assertFalse(app.session_state.job_history[0]["failed_projects"])
 

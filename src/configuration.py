@@ -19,6 +19,8 @@ def load_runtime_config(
     config = toml.load(config_path)
     overrides = overrides or {}
 
+    if "llm_config" in overrides:
+        config["llm_config"] = dict(overrides["llm_config"])
     llm_config = config.setdefault("llm_config", {})
     if overrides.get("url"):
         llm_config["base_url"] = overrides["url"]

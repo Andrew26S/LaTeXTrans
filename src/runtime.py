@@ -217,9 +217,14 @@ def build_retry_request(
     *,
     config_path: str = DEFAULT_CONFIG_PATH,
     overrides: Optional[Dict[str, Any]] = None,
+    llm_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build arguments for run_translation using only this batch's failed inputs."""
     retry_overrides = dict(overrides or {})
+    if llm_config is not None:
+        for key in ("url", "key", "model"):
+            retry_overrides.pop(key, None)
+        retry_overrides["llm_config"] = dict(llm_config)
     retry_overrides["paper_list"] = [item["arxiv_id"] for item in failures if "arxiv_id" in item]
     retry_overrides["replace_paper_list"] = True
     categories = dict(retry_overrides.get("category") or {})
@@ -259,5 +264,9 @@ def run_translation(
         "projects": projects,
         "projects_dir": projects_dir,
         "output_dir": output_dir,
+        "retry_request": build_retry_request(
+            project_status["failed_projects"], config_path=config_path, overrides=overrides,
+            llm_config=config["llm_config"],
+        ) if project_status["failed_projects"] else None,
         **project_status,
     }
