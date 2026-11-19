@@ -1,68 +1,75 @@
 """XeLaTeX text-font compatibility for reconstructed documents."""
 
-# Package hooks also see packages loaded by a class, a style, or an input file.
-# Install them before the class loads. Leave math and CJK families to the paper.
+import re
+
+# Install before the class so font choices made in .cls and .sty files are visible.
 _FONT_HOOKS = r"""% LaTeXTrans legacy text fonts
 \ifdefined\XeTeXversion
 \ExplSyntaxOn
-\cs_new_protected:Npn \latextrans_legacy_font:nnNNnn #1#2#3#4#5#6
+\bool_new:N \l_latextrans_mapped_font_bool
+\cs_new_protected:Npn \latextrans_map_family:NNnnnn #1#2#3#4#5#6
   {
-    % Preserve an OpenType family chosen before this package resets the default.
-    \AddToHook{package/#1/before}{
-      \cs_if_exist:NT \fontspec_if_fontspec_font:T {
-        \group_begin:
-        \fontfamily{#3}\selectfont
-        \fontspec_if_fontspec_font:T {
-          \tl_gset:cx {g_latextrans_#1_#2_tl} {#3}
-          \AddToHookNext{package/#1/after}{
-            \str_if_eq:eeT {#3} {#2}
-              {\tl_set_eq:Nc #3 {g_latextrans_#1_#2_tl}}
-          }
+    % fontspec resets the text families when first loaded, even if the class
+    % already selected a legacy family. Preserve that choice for the final check.
+    \AddToHook{package/fontspec/before}{
+      \str_if_eq:eeT {#1} {#3} {
+        \AddToHook{package/fontspec/after}{
+          \exp_args:Nno \clist_if_in:nnT {lmr,lmss,lmtt} {#1}
+            {\tl_set:Nn #1 {#3}}
         }
-        \group_end:
       }
     }
-    \AddToHook{package/#1/after}{
-      % fontspec resets the defaults if the class loaded the legacy package first.
-      \cs_if_exist:NF \setmainfont {
-        \AddToHook{package/fontspec/before}{
-          \str_if_eq:eeT {#3} {#2} {
-            \AddToHook{package/fontspec/after}{
-              \exp_args:Nno \clist_if_in:nnT {lmr,lmss,lmtt} {#3}
-                {\tl_set:Nn #3 {#2}}
-            }
-          }
-        }
+    % Record the resolved family, including options such as BoldFont and Scale.
+    % A later style can reset the NFSS default without loading a font package.
+    \AddToHook{package/fontspec/after}{
+      \ExpandArgs{c}\NewCommandCopy {latextrans_set_#3:} #2
+      \RenewDocumentCommand #2 {O{} m O{}} {
+        \use:c {latextrans_set_#3:} [##1]{##2}[##3]
+        \tl_set_eq:cN {latextrans_explicit_#3:} #1
       }
-      % Later font declarations win independently for roman, sans, and mono.
-      \AddToHook{begindocument/before}{
-        \str_if_eq:eeT {#3} {#2} {
-          \IfFontExistsTF{TeX~Gyre~#5}
-            {#4[#6]{TeX~Gyre~#5}}
-            {#4[#6]{\str_case:nn {#2} {
-              {ptm}{Latin~Modern~Roman}
-              {phv}{Latin~Modern~Sans}
-              {pcr}{Latin~Modern~Mono~Light}
-            }}}
-        }
+    }
+    \AddToHook{begindocument/before}{
+      \str_if_eq:eeT {#1} {#3} {
+        \bool_set_true:N \l_latextrans_mapped_font_bool
+        \cs_if_exist:cTF {latextrans_explicit_#3:}
+          {\tl_set_eq:Nc #1 {latextrans_explicit_#3:}}
+          {
+            \IfFontExistsTF{TeX~Gyre~#4}
+              {#2[#6]{TeX~Gyre~#4}}
+              {#2[#6]{Latin~Modern~#5}}
+          }
       }
     }
   }
 \cs_new:Npn \latextrans_helvet_scale: {\cs_if_exist_use:cF {Hv@scale} {1}}
-\latextrans_legacy_font:nnNNnn {times}   {ptm}\rmdefault\setmainfont{Termes}{}
-\latextrans_legacy_font:nnNNnn {mathptmx}{ptm}\rmdefault\setmainfont{Termes}{}
-\latextrans_legacy_font:nnNNnn {times}   {phv}\sfdefault\setsansfont{Heros}{Scale=\latextrans_helvet_scale:}
-\latextrans_legacy_font:nnNNnn {helvet}  {phv}\sfdefault\setsansfont{Heros}{Scale=\latextrans_helvet_scale:}
-\latextrans_legacy_font:nnNNnn {times}   {pcr}\ttdefault\setmonofont{Cursor}{}
-\latextrans_legacy_font:nnNNnn {courier} {pcr}\ttdefault\setmonofont{Cursor}{}
+\latextrans_map_family:NNnnnn \rmdefault\setmainfont {ptm}{Termes}{Roman}{}
+\latextrans_map_family:NNnnnn \sfdefault\setsansfont {phv}{Heros}{Sans}{Scale=\latextrans_helvet_scale:}
+\latextrans_map_family:NNnnnn \ttdefault\setmonofont {pcr}{Cursor}{Mono~Light}{}
+% A late fontenc package may have selected T1 after the explicit OpenType font.
+% Use its Unicode encoding for normal text and symbols such as the list bullet.
+\AddToHook{begindocument/before}{
+  \bool_if:NT \l_latextrans_mapped_font_bool {
+    \cs_if_exist:cT {\UTFencname/\familydefault/m/n}
+      {\tl_set_eq:NN \encodingdefault \UTFencname}
+  }
+}
 \ExplSyntaxOff
 \fi
 """
 
 
+# The parser strips comments when an already translated project is used as input.
+_GENERATED_HOOKS = re.compile(
+    r"^(?:% LaTeXTrans legacy text fonts\n)?\\ifdefined\\XeTeXversion\s+\\ExplSyntaxOn\s+"
+    r"(?:\\cs_new_protected:Npn\s+\\latextrans_legacy_font:|\\bool_new:N\s+\\l_latextrans_mapped_font_bool\b)"
+    r".*?^\\ExplSyntaxOff\s+\\fi\b[ \t]*\n?", re.MULTILINE | re.DOTALL,
+)
+
+
 def add_legacy_font_hooks(tex: str) -> str:
-    if _FONT_HOOKS in tex:
-        return tex
+    previous = _GENERATED_HOOKS.search(tex)
+    if previous:
+        return tex[:previous.start()] + _FONT_HOOKS + tex[previous.end():]
     # Keep leading comments, including TeX editor directives, on the first lines.
     lines = tex.splitlines(keepends=True)
     for index, line in enumerate(lines):

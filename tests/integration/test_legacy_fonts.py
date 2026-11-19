@@ -9,7 +9,7 @@ from src.formats.latex.reconstruct import LatexConstructor
 
 @unittest.skipUnless(shutil.which("xelatex"), "requires XeLaTeX with CTeX and TeX Gyre")
 class LegacyFontTests(unittest.TestCase):
-    def compile_fonts(self, preamble, *, class_packages=""):
+    def compile_fonts(self, preamble, *, class_packages="", body=""):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -22,8 +22,7 @@ class LegacyFontTests(unittest.TestCase):
 {\rmfamily\bfseries\typeout{TestRoman=\fontname\font}54.9}
 {\sffamily\bfseries\typeout{TestSans=\fontname\font}Score}
 {\ttfamily\bfseries\typeout{TestMono=\fontname\font}Model}
-\end{document}
-"""
+""" + body + "\n\\end{document}\n"
         )
         (root / "main.tex").write_text(source)
         LatexConstructor([{"trans_content": source}], [], [], [], [], str(root)).construct()
@@ -71,3 +70,30 @@ class LegacyFontTests(unittest.TestCase):
         for font, family in zip(fonts, ["roman", "sans", "mono"], strict=True):
             self.assertIn(family, font)
             self.assertRegex(font, r"bold|/b\b")
+
+    def test_direct_defaults_with_t1_and_microtype(self):
+        fonts = self.compile_fonts(
+            r"""
+\renewcommand{\rmdefault}{ptm}
+\renewcommand{\sfdefault}{phv}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+""",
+            class_packages=r"\renewcommand{\ttdefault}{pcr}",
+            body=r"\begin{itemize}\item 中文\footnote{Test}\end{itemize}",
+        )
+        for font, family in zip(fonts, ["termes", "heros", "cursor"], strict=True):
+            self.assertIn(family, font)
+            self.assertRegex(font, r"bold|/b\b")
+
+    def test_direct_defaults_preserve_configured_opentype_faces(self):
+        fonts = self.compile_fonts(r"""
+\setmainfont{TeX Gyre Pagella}[BoldFont={TeX Gyre Bonum Bold}]
+\renewcommand{\rmdefault}{ptm}
+\renewcommand{\sfdefault}{phv}
+\setsansfont{Latin Modern Sans}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+""", body=r"\begin{itemize}\item 中文\end{itemize}")
+        self.assertIn("bonum", fonts[0])
+        self.assertIn("latinmodernsans", fonts[1])

@@ -70,7 +70,7 @@ sudo apt install latexmk texlive-xetex texlive-latex-recommended texlive-lang-ch
 sudo apt install texlive-fonts-recommended fonts-noto-cjk fonts-noto-cjk-extra
 ```
 
-译文用 XeLaTeX 编译。对仍使用 `times`、`mathptmx`、`helvet` 或 `courier` 默认西文字体的模板，生成的译文会选用对应的 TeX Gyre 字体，让正文和表格中的粗体正常显示。论文显式指定的西文字体优先。
+译文用 XeLaTeX 编译。模板直接指定旧西文字体族 `ptm`、`phv`、`pcr`，或通过 `times` 等宏包选用它们时，译文会映射到对应的 TeX Gyre 字体，让正文和表格中的粗体正常显示。论文显式指定的西文字体优先。
 
 下面几组包按论文模板的需要选装。磁盘空间有限时，可以等编译提示缺少宏包后再安装对应的包。
 
