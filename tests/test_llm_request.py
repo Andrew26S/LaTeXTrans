@@ -119,6 +119,23 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(make_agent(max_tokens=4096)._build_payload([])["max_tokens"], 4096)
 
 
+class SourceReferenceRequestTests(unittest.TestCase):
+    def test_translation_glossary_and_repair_include_same_reference(self):
+        agent = make_agent()
+        agent.source_contexts = {"1": "Paper title: Example"}
+        session = FakeSession(*[FakeResponse(body=ok_body()) for _ in range(3)])
+        run(agent._request_llm_for_trans("sys", "Source.", "1", "sec", session))
+        run(agent._request_llm_for_trans_with_terms("sys", "Source.", "1", "sec", session))
+        part = {"content": "Source.", "trans_content": "Old translation"}
+        run(agent._request_llm_for_retrans_error_parts("sys", part, "fix", "1", "sec", session))
+        for payload in session.payloads:
+            reference, target = payload["messages"][1]["content"].split("[Target fragment]")
+            self.assertIn("Paper title: Example", reference)
+            self.assertIn("Source.", target)
+        self.assertIn("Old translation", target)
+        self.assertIn("fix", target)
+
+
 class RequestFallbackTests(unittest.TestCase):
     def test_retranslate_network_error_keeps_previous_translation(self):
         # Previously aiohttp errors escaped this path (it caught requests' exceptions) and crashed the run.

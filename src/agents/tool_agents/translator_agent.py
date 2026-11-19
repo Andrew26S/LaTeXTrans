@@ -3,6 +3,7 @@ from src.agents.tool_agents.base_tool_agent import BaseToolAgent
 #from TransLatex.src.formats.latex.prompts import *
 import src.formats.latex.prompts as pm
 from src.formats.latex.utils import *
+from src.formats.latex.source_context import build_source_contexts
 from pathlib import Path
 import sys
 import os
@@ -61,6 +62,7 @@ class TranslatorAgent(BaseToolAgent):
         self.trans_mode = trans_mode if trans_mode is not None else 0
         # self.term_dict = config.get("term_dict", {})  # Dictionary for terminology translation
         self.term_dict = {}
+        self.source_contexts = {}
 
     async def execute(self, error_retry_count=0, Maxtry=3):
 
@@ -78,6 +80,8 @@ class TranslatorAgent(BaseToolAgent):
         sections = self.read_file(Path(self.output_dir, "sections_map.json"), "json")
         captions = self.read_file(Path(self.output_dir, "captions_map.json"), "json")
         envs = self.read_file(Path(self.output_dir, "envs_map.json"), "json")
+
+        self.source_contexts = build_source_contexts(sections, captions, envs)
 
         if self.trans_mode == 0 or self.trans_mode == 2:
             self.log(f"Starting translation for project: {os.path.basename(self.project_dir)}.")
@@ -642,16 +646,26 @@ class TranslatorAgent(BaseToolAgent):
         else:
             self.fail_env_phs.append(fail_part)
 
+    def _translation_payload(self, system_prompt, user_prompt, part_id):
+        context = self.source_contexts.get(part_id)
+        if context:
+            system_prompt += (
+                "\nUse the source reference only to interpret the target fragment. "
+                "Return only the translated or corrected target fragment."
+            )
+            user_prompt = f"[Source reference]\n{context}\n\n[Target fragment]\n{user_prompt}"
+        return self._build_payload([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ])
+
     async def _request_llm_for_trans(self,
                                      system_prompt: str,
                                      text: str,
                                      fail_part: str,
                                      type: str,
                                      session: aiohttp.ClientSession) -> str:
-        payload = self._build_payload([
-            {"role": "system", "content": f"{system_prompt}"},
-            {"role": "user", "content": f"{text}"}
-        ])
+        payload = self._translation_payload(system_prompt, text, fail_part)
         try:
             content = await self._post_chat(payload, session)
         except LLMRequestError as e:
@@ -666,16 +680,8 @@ class TranslatorAgent(BaseToolAgent):
                                           fail_part: str,
                                           type: str,
                                           session: aiohttp.ClientSession) -> str:
-        payload = self._build_payload([
-            {
-                "role": "system",
-                "content": f"{system_prompt}\nWhen translating, you must strictly use the following glossary for substitution. This is the highest priority rule to ensure the consistency of terms throughout the text.\n<Glossary>:\n{self.term_dict}\nNow, please translate the following new paragraph. Maintain the terminology from the glossary provided."
-            },
-            {
-                "role": "user",
-                "content": f"[Current LaTeX Paragraph]:\n{text}"
-            }
-        ])
+        system_prompt = f"{system_prompt}\nWhen translating, you must strictly use the following glossary for substitution. This is the highest priority rule to ensure the consistency of terms throughout the text.\n<Glossary>:\n{self.term_dict}\nNow, please translate the following new paragraph. Maintain the terminology from the glossary provided."
+        payload = self._translation_payload(system_prompt, f"[Current LaTeX Paragraph]:\n{text}", fail_part)
         try:
             content = await self._post_chat(payload, session)
         except LLMRequestError as e:
@@ -693,16 +699,8 @@ class TranslatorAgent(BaseToolAgent):
                                                    session: aiohttp.ClientSession) -> str:
 
         user_prompt = f"[Original]:\n{part['content']}\n[Translation]:\n{part['trans_content']}\n[Error]:\n{error_message}"
-        payload = self._build_payload([
-            {
-                "role": "system",
-                "content": f"{system_prompt}\nWhen translating, you must strictly use the following glossary for substitution. This is the highest priority rule to ensure the consistency of terms throughout the text.\n<Glossary>:\n{self.term_dict}\nNow, please translate the following new paragraph. Maintain the terminology from the glossary provided."
-            },
-            {
-                "role": "user",
-                "content": f"{user_prompt}"
-            }
-        ])
+        system_prompt = f"{system_prompt}\nWhen translating, you must strictly use the following glossary for substitution. This is the highest priority rule to ensure the consistency of terms throughout the text.\n<Glossary>:\n{self.term_dict}\nNow, please translate the following new paragraph. Maintain the terminology from the glossary provided."
+        payload = self._translation_payload(system_prompt, user_prompt, fail_part)
         try:
             content = await self._post_chat(payload, session)
         except LLMRequestError as e:
