@@ -145,7 +145,17 @@ This command will:
 2. Execute a workflow consisting of parsing, translation, refactoring and compilation
 3. Save the translated LaTeX project file of the paper and the PDF of the compiled translation in the outputs folder
 
-Each paper has a fixed output path for each target language. For example, the Chinese translation of `2410.05160` is saved to `outputs/ch_2410.05160/ch_2410.05160.pdf`. If that file exists, the CLI asks whether to translate again and replace it (Enter cancels). The GUI offers **Cancel translation** and **Replace translation**. The existing file is replaced only after the new translation compiles successfully.
+Each paper has a fixed output path for each target language. For example, the Chinese translation of `2410.05160` is saved to `outputs/ch_2410.05160/ch_2410.05160.pdf`. If that file exists, the CLI asks whether to translate again and replace it (Enter cancels). The GUI offers **Cancel translation** and **Replace translation**. Replacement requires a publishable result.
+
+The project result distinguishes a published PDF, a published PDF with warnings, a preview for review, and a failed build. The original engine status and exit code remain in `compilation_report.json` alongside the published PDF and in its run directory. For a nonzero exit, automatic publication requires all identified errors to be recognized recoverable diagnostics, a completed final TeX pass and a matching page count from `pdfinfo` or `extractbb`. One example is XeLaTeX ignoring a template’s ligature setting. An interruption, missing chapter, unknown error or unverified page count yields a preview in the run directory and preserves the previous publication. An unreadable or missing PDF is a failure. The CLI exits with zero for publishable results and nonzero for previews or failures, including in compile-only mode.
+
+When a build produces a PDF with errors (`pdf_with_errors`), the run also retains the reconstructed LaTeX project, including its templates, figures and bibliography. Edit the files under `project/` and pass the **run directory** to the CLI:
+
+```bash
+latextrans --compile-only outputs/.latextrans/ch_2410.05160/run-001
+```
+
+You can also run `latextrans --compile-only` from inside that directory, or select **Recompile saved project** in the GUI task history. Each attempt writes its PDF (if produced) and log under `recompile-001/build_xelatex/`, then `recompile-002/`, and so on. This runs only XeLaTeX via latexmk and leaves the published translation and original diagnostics intact. Older runs containing only logs and a PDF require a new translation to create an editable project.
 
 ### Batch Translation via ArXiv IDs
 

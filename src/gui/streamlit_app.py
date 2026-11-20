@@ -4,8 +4,9 @@ from typing import Any, Dict, List
 
 import streamlit as streamlit_backend
 
+from src.formats.latex.delivery import DELIVERY_LABELS, delivery_status
 from src.configuration import DEFAULT_LOCAL_CONFIG_PATH, load_runtime_config
-from src.runtime import run_translation, split_multivalue_text
+from src.runtime import recompile_translation, run_translation, split_multivalue_text
 from src.utils.translation_output import pdf_revision
 from src.utils.progress import use_reporter
 
@@ -157,6 +158,7 @@ def _append_history(result, request, logs):
         "output_dir": result["output_dir"],
         "completed_projects": result["completed_projects"],
         "failed_projects": result["failed_projects"],
+        "preview_projects": result.get("preview_projects", []),
         "pdfs": result["pdfs"],
         "logs": list(logs[-80:]),
     }
@@ -189,16 +191,18 @@ def _show_compile_attempts(projects, *, downloads=False):
         if not attempts:
             continue
         streamlit_backend.text(project["project_name"])
+        for note in project.get("diagnostics", []):
+            streamlit_backend.write(note)
         streamlit_backend.table(attempts)
-        if downloads:
+        if downloads or project.get("delivery_status") == "preview":
             for attempt in attempts:
-                if attempt["status"] == "pdf_with_errors":
+                if delivery_status(attempt) == "preview" and attempt.get("pdf_path"):
                     pdf = Path(attempt["pdf_path"])
                     try:
                         streamlit_backend.download_button(
-                            f"Download PDF with errors ({attempt['engine']})", data=pdf.read_bytes(),
+                            f"Download preview for review ({attempt['engine']})", data=pdf.read_bytes(),
                             file_name=pdf.name, mime="application/pdf",
-                            key=f"partial-{project['index']}-{pdf}", on_click="ignore",
+                            key=f"partial-{downloads}-{project['index']}-{pdf}", on_click="ignore",
                         )
                     except OSError:
                         streamlit_backend.warning(f"Could not read {pdf}")
@@ -208,13 +212,14 @@ def _render_result_files(result, request) -> None:
     output_dir = Path(result["output_dir"])
     completed = result["completed_projects"]
     failed = result["failed_projects"]
+    previews = result.get("preview_projects", [])
     pdfs = [Path(path) for path in result["pdfs"]]
 
     streamlit_backend.subheader("Results")
     stat_a, stat_b, stat_c = streamlit_backend.columns(3)
-    stat_a.metric("Completed", str(len(completed)))
+    stat_a.metric("Published", str(len(completed)))
     stat_b.metric("Failed", str(len(failed)))
-    stat_c.metric("PDFs from completed projects", str(len(pdfs)))
+    stat_c.metric("Previews for review", str(len(previews)))
 
     streamlit_backend.code(str(output_dir), language="text")
     streamlit_backend.caption("Output directory. Use it directly in File Explorer or your terminal.")
@@ -237,11 +242,16 @@ def _render_result_files(result, request) -> None:
                 except OSError:
                     streamlit_backend.warning(f"Could not read {pdf_path}")
     else:
-        streamlit_backend.info("No projects produced a successfully compiled PDF.")
+        message = "Preview PDFs are available under Compilation details." if previews else "No published PDF."
+        streamlit_backend.info(message)
 
-    projects = completed + failed
+    for project in completed + previews:
+        status = project.get("delivery_status")
+        if status in {"ready_with_warnings", "preview"}:
+            streamlit_backend.warning(f"{project['project_name']}: {DELIVERY_LABELS[status]}")
+    projects = completed + previews + failed
     if any(project.get("compile_attempts") for project in projects):
-        with streamlit_backend.expander("Compilation details", expanded=bool(failed)):
+        with streamlit_backend.expander("Compilation details", expanded=bool(failed or previews or any(p.get("diagnostics") for p in completed))):
             _show_compile_attempts(projects, downloads=True)
 
     if failed:
@@ -265,7 +275,8 @@ def _render_history() -> None:
     for index, item in enumerate(history):
         label = (
             f"{item['timestamp']} | "
-            f"{len(item['completed_projects'])} ok / {len(item['failed_projects'])} failed | "
+            f"{len(item['completed_projects'])} published / {len(item.get('preview_projects', []))} previews / "
+            f"{len(item['failed_projects'])} failed | "
             f"{Path(item['output_dir']).name}"
         )
         with streamlit_backend.expander(label, expanded=index == 0):
@@ -290,7 +301,11 @@ def _render_history() -> None:
                     if not any(Path(pdf).is_relative_to(folder) for folder in superseded_dirs):
                         streamlit_backend.code(pdf, language="text")
 
-            _show_compile_attempts(current + item["failed_projects"])
+            previews = item.get("preview_projects", [])
+            _show_compile_attempts(current + previews + item["failed_projects"])
+            for project in item["completed_projects"] + previews + item["failed_projects"]:
+                if run := project.get("recovery_run"):
+                    _render_recompile(project, Path(run))
             if item["failed_projects"]:
                 streamlit_backend.write("Failed Projects")
                 streamlit_backend.code("\n".join(p["project_name"] for p in item["failed_projects"]), language="text")
@@ -305,6 +320,31 @@ def _render_history() -> None:
 
             streamlit_backend.write("Recent Logs")
             streamlit_backend.code("\n".join(item["logs"]), language="text")
+
+
+def _render_recompile(project: dict, run: Path) -> None:
+    streamlit_backend.text(f"Saved translated project: {run / 'project'}")
+    if streamlit_backend.button("Recompile saved project", key=f"recompile-{run}"):
+        try:
+            with streamlit_backend.spinner("Compiling edited LaTeX project…"):
+                project["recompile_attempt"] = recompile_translation(run)
+        except (ValueError, OSError, RuntimeError) as exc:
+            streamlit_backend.error(f"Could not recompile: {exc}")
+            return
+    attempt = project.get("recompile_attempt")
+    if attempt:
+        streamlit_backend.text(f"Recompile: {DELIVERY_LABELS[delivery_status(attempt)]} (log: {attempt['log_path']})")
+        for note in attempt.get("diagnostics", []):
+            streamlit_backend.write(note)
+        if attempt["pdf_path"] and delivery_status(attempt) != "failed":
+            pdf = Path(attempt["pdf_path"])
+            try:
+                streamlit_backend.download_button(
+                    "Download recompiled PDF", data=pdf.read_bytes(), file_name=pdf.name,
+                    mime="application/pdf", key=f"recompiled-{run}", on_click="ignore",
+                )
+            except OSError:
+                streamlit_backend.warning(f"Could not read {pdf}")
 
 
 def _run_streamlit_job(request: Dict[str, Any], title: str) -> None:
@@ -350,7 +390,7 @@ def _run_streamlit_job(request: Dict[str, Any], title: str) -> None:
     for project in pending:
         key = (project["pdf_path"], project.get("input_archive", project["project_dir"]))
         streamlit_backend.session_state.pending_translations[key] = project
-    if pending and not (result["completed_projects"] or result["failed_projects"]):
+    if pending and not (result["completed_projects"] or result["failed_projects"] or result.get("preview_projects")):
         stage_text.text("Waiting for a replacement decision.")
         return
 
@@ -358,12 +398,14 @@ def _run_streamlit_job(request: Dict[str, Any], title: str) -> None:
     stage_text.markdown("**Stage** Finished")
     completed = len(result["completed_projects"])
     failed = len(result["failed_projects"])
-    summary = f"Completed {completed} project(s), failed {failed}."
+    previews = len(result.get("preview_projects", []))
+    warnings = sum(p.get("delivery_status") == "ready_with_warnings" for p in result["completed_projects"])
+    summary = f"Published {completed} ({warnings} with warnings), previews {previews}, failed {failed}."
     if pending:
         summary += f" Awaiting confirmation for {len(pending)}."
-    if not failed:
+    if not (failed or previews or warnings):
         results_placeholder.success(summary)
-    elif completed:
+    elif completed or previews:
         results_placeholder.warning(summary)
     else:
         results_placeholder.error(summary)

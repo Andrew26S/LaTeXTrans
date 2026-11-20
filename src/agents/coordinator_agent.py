@@ -1,4 +1,5 @@
 import os
+import shutil
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import sys
@@ -9,12 +10,17 @@ sys.path.append(base_dir)
 
 from src.utils.translation_output import preserve_diagnostics, publish_translation, translation_workspace
 from src.utils.progress import log_message
+from src.formats.latex.delivery import delivery_status, write_compile_report
 from .tool_agents.base_tool_agent import BaseToolAgent
 from .tool_agents.parser_agent import ParserAgent
 from .tool_agents.translator_agent import TranslatorAgent 
 from .tool_agents.generator_agent import GeneratorAgent
 from .tool_agents.validator_agent import ValidatorAgent
 import gc
+
+
+class PreviewAvailable(RuntimeError):
+    """Compilation produced a preview that needs review before publication."""
 
 
 class CoordinatorAgent:
@@ -43,6 +49,7 @@ class CoordinatorAgent:
         self.loop = asyncio.new_event_loop()
         self.mode = config.get("mode", 0)
         self.compile_attempts = []
+        self.recovery_run: Optional[Path] = None
         self.output_name = output_name or f"{self.target_language}_{Path(project_dir).name}"
         self.destination = destination or Path(output_dir, self.output_name)
 
@@ -62,11 +69,17 @@ class CoordinatorAgent:
                 await self._generate(str(workspace))
             finally:
                 preserve_diagnostics(self.compile_attempts, workspace)
+                if self.compile_attempts:
+                    write_compile_report(workspace.parent, self.compile_attempts[-1])
             final_pdf = self.destination / f"{self.output_name}.pdf"
+            if self.compile_attempts:
+                shutil.copy2(workspace.parent / "compilation_report.json", workspace)
             publish_translation(workspace, self.destination, final_pdf.name)
             if self.compile_attempts:
                 self.compile_attempts[-1]["pdf_path"] = str(final_pdf)
-            log_message(f"Successfully translated {self.project_dir} to {final_pdf}.")
+            with_warnings = self.compile_attempts and self.compile_attempts[-1].get("delivery_status") == "ready_with_warnings"
+            label = "Published PDF with compilation warnings" if with_warnings else "Published translated PDF"
+            log_message(f"{label}: {final_pdf}")
             return str(final_pdf)
 
     async def _generate(self, transed_project_dir: str) -> None:
@@ -102,14 +115,30 @@ class CoordinatorAgent:
             generated_pdf = generator_agent.execute()
         finally:
             self.compile_attempts = list(generator_agent.compile_attempts)
+        workspace = Path(transed_project_dir)
+        translated_project = workspace / Path(self.project_dir).name
+        partial = any(a.get("pdf_path") and delivery_status(a) != "ready" for a in self.compile_attempts)
+        if partial and translated_project.is_dir():
+            if generated_pdf:
+                shutil.copytree(translated_project, workspace.parent / "project")
+            else:
+                translated_project.rename(workspace.parent / "project")
+            self.recovery_run = workspace.parent
+            log_message(f"Saved translated LaTeX project in {self.recovery_run / 'project'}")
         if not generated_pdf:
-            if any(a["status"] == "pdf_with_errors" for a in self.compile_attempts):
-                raise RuntimeError("PDF produced with compilation errors. See the engine logs.")
+            if any(delivery_status(a) == "preview" for a in self.compile_attempts):
+                raise PreviewAvailable("PDF generated; review the compilation diagnostics.")
+            if partial:
+                raise RuntimeError("The generated PDF could not be opened. See the compilation report.")
             raise RuntimeError("Compilation produced no translated PDF.")
         if not os.path.isfile(generated_pdf) or os.path.getsize(generated_pdf) == 0:
             raise RuntimeError(f"Generated PDF is missing or empty: {generated_pdf}")
 
-        os.replace(generated_pdf, Path(transed_project_dir, f"{self.output_name}.pdf"))
+        target = workspace / f"{self.output_name}.pdf"
+        if partial:
+            shutil.copy2(generated_pdf, target)
+        else:
+            os.replace(generated_pdf, target)
         source_copy = Path(transed_project_dir, Path(self.project_dir).name)
         published_name = self.output_name.removeprefix(f"{self.target_language}_")
         if source_copy.is_dir() and source_copy.name != published_name:

@@ -40,7 +40,7 @@ class PreparationFailureTests(unittest.TestCase):
         ):
             self.assertEqual(main(), 1)
         self.assertEqual(coordinator.call_args.kwargs["project_dir"], str(valid))
-        self.assertIn("Completed 1 project(s), failed 1.", output.getvalue())
+        self.assertIn("Published 1 (0 with warnings), previews 0, failed 1.", output.getvalue())
         self.assertIn(str(archive), output.getvalue())
         self.assertFalse((self.sources / "broken").exists())
 

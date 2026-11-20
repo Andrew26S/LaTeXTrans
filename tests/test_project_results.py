@@ -120,10 +120,10 @@ class ProjectResultTests(unittest.TestCase):
                 result = run_projects({}, [str(project)], str(root), events.append)
 
             self.assertFalse(result["completed_projects"])
-            failure, = result["failed_projects"]
+            failure, = result["preview_projects"]
             self.assertEqual(failure["compilation_status"], "pdf_with_errors")
             self.assertEqual(failure["compile_attempts"], attempts)
-            self.assertEqual(events[-1], {"type": "project_error", **failure})
+            self.assertEqual(events[-1], {"type": "project_preview", **failure})
             self.assertFalse((root / "ch_paper" / "ch_paper.pdf").exists())
 
     def test_missing_latexmk_records_diagnostic_and_clears_previous_success(self):
@@ -219,6 +219,7 @@ class ProjectResultTests(unittest.TestCase):
                 patch.object(coordinator_agent, "ParserAgent"),
                 patch.object(coordinator_agent, "TranslatorAgent") as translator,
                 patch.object(coordinator_agent, "ValidatorAgent") as validator,
+                patch("src.formats.latex.delivery.pdf_page_count", return_value=1),
                 patch.object(coordinator_agent.GeneratorAgent, "read_file", return_value=[]),
                 patch("src.formats.latex.reconstruct.LatexConstructor"),
                 patch("src.formats.latex.compile.subprocess.run", side_effect=build),
@@ -234,7 +235,7 @@ class ProjectResultTests(unittest.TestCase):
                 self.assertEqual(pending["pdf_path"], translated)
                 retry = run_projects({}, projects[:1], str(root / "outputs"), confirm_replace=lambda pdf: True)
 
-            attempts = first["failed_projects"][0]["compile_attempts"]
+            attempts = first["preview_projects"][0]["compile_attempts"]
             self.assertEqual([attempt["engine"] for attempt in attempts], ["xelatex"])
             history = root / "outputs" / ".latextrans" / "ch_paper"
             failed_build = history / "run-001" / "build_xelatex"
@@ -281,3 +282,32 @@ _render_result_files(st.session_state.result, {"project_items": [], "overrides":
             buttons = app.get("download_button")
             self.assertEqual(len(buttons), 3)
             self.assertTrue(all(button.proto.ignore_rerun for button in buttons))
+
+    def test_gui_recompiles_saved_project_without_replacing_failed_status(self):
+        from streamlit.testing.v1 import AppTest
+
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            pdf = run / "fixed.pdf"
+            pdf.write_bytes(b"recompiled")
+            attempt = dict(engine="xelatex", status="success", pdf_path=str(pdf), log_path=str(run / "log"))
+            app = AppTest.from_string("""
+import streamlit as st
+from src.gui.streamlit_app import _render_history
+_render_history()
+""")
+            app.session_state.job_history = [{
+                "timestamp": "test", "inputs": [], "output_dir": directory, "pdfs": [], "logs": [],
+                "completed_projects": [], "failed_projects": [{
+                    "project_name": "paper", "compilation_status": "pdf_with_errors", "recovery_run": directory,
+                }],
+            }]
+            app.run()
+            with patch("src.gui.streamlit_app.recompile_translation", return_value=attempt) as recompile:
+                next(button for button in app.button if button.label == "Recompile saved project").click().run()
+                recompile.assert_called_once_with(run)
+            self.assertFalse(app.exception)
+            saved = app.session_state.job_history[0]["failed_projects"][0]
+            self.assertEqual(saved["compilation_status"], "pdf_with_errors")
+            self.assertEqual(saved["recompile_attempt"], attempt)
+            self.assertEqual(len(app.get("download_button")), 1)

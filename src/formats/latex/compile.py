@@ -2,10 +2,11 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Literal, Optional, TypedDict
+from typing import Literal, NotRequired, Optional, TypedDict
 
 from src.utils.progress import log_message
 from .utils import find_main_tex_file
+from .delivery import DeliveryStatus, assess_pdf
 
 
 CompileStatus = Literal["success", "pdf_with_errors", "failed"]
@@ -17,6 +18,8 @@ class CompileAttempt(TypedDict):
     status: CompileStatus
     pdf_path: Optional[str]
     log_path: str
+    delivery_status: NotRequired[DeliveryStatus]
+    diagnostics: NotRequired[list[str]]
 
 
 def _reported_pdf(report: Path, source_dir: Path, build_dir: Path) -> Optional[str]:
@@ -107,6 +110,17 @@ class LaTexCompiler:
         for engine in engines:
             attempt = run_latexmk(engine, tex_file, parent, publish=output_dir is not None)
             self.attempts.append(attempt)
+            if output_dir is None:
+                pdf = Path(attempt["pdf_path"]) if attempt["pdf_path"] else None
+                log = Path(attempt["log_path"])
+                delivery, notes = assess_pdf(pdf, log, engine, attempt["exit_code"])
+                attempt.update(delivery_status=delivery, diagnostics=notes)
+                for note in notes:
+                    log_message(note)
+                if delivery == "ready_with_warnings":
+                    return attempt["pdf_path"]
+                if delivery != "ready":
+                    continue
             if attempt["status"] == "success":
                 marker.write_text("Compilation successful\n", encoding="utf-8")
                 return attempt["pdf_path"]

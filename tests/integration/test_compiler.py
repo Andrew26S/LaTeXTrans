@@ -4,13 +4,86 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from src.agents import coordinator_agent
 from src.formats.latex.compile import LaTexCompiler
 from src.formats.latex.utils import compile_with_latexmk
+from src.runtime import recompile_translation, run_projects
 
 
 class CompilerIntegrationTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("latexmk") and shutil.which("xelatex"), "requires XeLaTeX with CTeX")
+    def test_recompile_edited_project_after_partial_pdf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            src = root / "paper"
+            (src / "chapters").mkdir(parents=True)
+            main = r"\documentclass{article}\usepackage{local}\begin{document}\input{chapters/body}\end{document}"
+            (src / "main.tex").write_text(main)
+            (src / "chapters/body.tex").write_text("Original text")
+            (src / "local.sty").write_text(r"\PackageError{local}{Template requires repair}{}")
+            begin, end = "<PLACEHOLDER_chapters/body_begin>", "<PLACEHOLDER_chapters/body_end>"
+            maps = {
+                "sections_map.json": [{"trans_content": main.replace(r"\input{chapters/body}", begin + "译文" + end)}],
+                "inputs_map.json": [{"begin": begin, "end": end, "path": "chapters/body", "command": r"\input{chapters/body}"}],
+            }
+            with (
+                patch.object(coordinator_agent, "ParserAgent"),
+                patch.object(coordinator_agent, "TranslatorAgent") as translator,
+                patch.object(coordinator_agent, "ValidatorAgent") as validator,
+                patch.object(coordinator_agent.GeneratorAgent, "read_file", side_effect=lambda p, fmt: maps.get(p.name, [])),
+            ):
+                translator.return_value.execute = AsyncMock()
+                validator.return_value.execute.return_value = []
+                result = run_projects({}, [str(src)], str(root / "out"))
+                self.assertEqual(result["failed_projects"], [])
+                failed, = result["preview_projects"]
+                self.assertEqual(failed["compilation_status"], "pdf_with_errors", failed)
+                run = Path(failed["recovery_run"])
+                self.assertEqual(run, root / "out/.latextrans/ch_paper/run-001")
+                project = run / "project"
+                self.assertEqual((project / "chapters/body.tex").read_text().strip(), "译文")
+                self.assertFalse((run / "work").exists())
+                original = failed["compile_attempts"][0]
+                original_pdf = Path(original["pdf_path"]).read_bytes()
+                original_log = Path(original["log_path"]).read_bytes()
+                shutil.rmtree(src)  # The retained project must stand on its own.
+                retry = recompile_translation(run)
+                self.assertEqual(retry["status"], "pdf_with_errors")
+                (project / "local.sty").write_text(r"\ProvidesPackage{local}")
+                fixed = recompile_translation(run)
+                self.assertEqual(fixed["status"], "success")
+                self.assertTrue(Path(fixed["pdf_path"]).is_relative_to(run / "recompile-002"))
+                self.assertTrue(Path(retry["pdf_path"]).is_file())
+                self.assertEqual(Path(original["pdf_path"]).read_bytes(), original_pdf)
+                self.assertEqual(Path(original["log_path"]).read_bytes(), original_log)
+                translator.return_value.execute.assert_awaited_once()
+
+                src.mkdir()
+                (src / "main.tex").write_text(main)
+                (src / "chapters").mkdir()
+                (src / "chapters/body.tex").write_text("Original text")
+                (src / "local.sty").write_text(r"\RequirePackage{microtype}\DisableLigatures[f]{family=*}")
+                result = run_projects({}, [str(src)], str(root / "out"))
+                published, = result["completed_projects"]
+                self.assertEqual(result["preview_projects"], [])
+                self.assertEqual(published["delivery_status"], "ready_with_warnings")
+                self.assertEqual(published["compilation_status"], "pdf_with_errors")
+                public_pdf = Path(published["pdf_path"])
+                self.assertTrue(public_pdf.is_file())
+                self.assertTrue((public_pdf.parent / "paper/main.tex").is_file())
+                self.assertTrue((public_pdf.parent / "compilation_report.json").is_file())
+                self.assertTrue((Path(published["recovery_run"]) / "project/main.tex").is_file())
+                self.assertEqual(recompile_translation(published["recovery_run"])["delivery_status"], "ready_with_warnings")
+
+                (src / "local.sty").write_text(r"\PackageError{local}{New unknown error}{}")
+                before = public_pdf.read_bytes()
+                result = run_projects({}, [str(src)], str(root / "out"), confirm_replace=lambda pdf: True)
+                preview, = result["preview_projects"]
+                self.assertEqual(preview["delivery_status"], "preview")
+                self.assertEqual(public_pdf.read_bytes(), before)
+
     @unittest.skipUnless(shutil.which("latexmk") and shutil.which("pdflatex"), "requires TeX Live")
     def test_standalone_root_relative_includes_and_agent_source_maps(self):
         with tempfile.TemporaryDirectory() as directory:

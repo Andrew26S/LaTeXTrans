@@ -63,18 +63,27 @@ def translation_slot(root: Path, name: str) -> Iterator[Path]:
         yield destination
 
 
-@contextmanager
-def translation_workspace(root: Path, output_name: str) -> Iterator[Path]:
-    """Reserve a numbered run under the same name used for publication."""
-    project = _project_state(root, output_name)
+def _numbered_directory(parent: Path, prefix: str) -> Path:
     for number in count(1):
-        run = project / f"run-{number:03d}"
+        directory = parent / f"{prefix}-{number:03d}"
         try:
-            run.mkdir(mode=0o700)
-            break
+            directory.mkdir(mode=0o700)
+            return directory
         except FileExistsError:
             continue
 
+
+@contextmanager
+def recompile_directory(run: Path) -> Iterator[Path]:
+    # TeX and bibliography tools may also write into the retained source tree.
+    with _lock(run / "recompile.lock", str(run)):
+        yield _numbered_directory(run, "recompile")
+
+
+@contextmanager
+def translation_workspace(root: Path, output_name: str) -> Iterator[Path]:
+    """Reserve a numbered run under the same name used for publication."""
+    run = _numbered_directory(_project_state(root, output_name), "run")
     workspace = run / "work"
     workspace.mkdir()
     try:
@@ -91,7 +100,7 @@ def preserve_diagnostics(attempts: list, workspace: Path) -> None:
     saved_any = False
     for attempt in attempts:
         for field in ("log_path", "pdf_path"):
-            if field == "pdf_path" and attempt["status"] == "success":
+            if field == "pdf_path" and attempt["status"] == "success" and attempt.get("delivery_status", "ready") == "ready":
                 continue
             path = Path(attempt[field]) if attempt.get(field) else None
             if path is None or not path.is_relative_to(workspace) or not path.is_file():

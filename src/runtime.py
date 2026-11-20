@@ -6,9 +6,11 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 from src.configuration import DEFAULT_CONFIG_PATH, DEFAULT_LOCAL_CONFIG_PATH, load_runtime_config
 
 from src.utils.paths import create_unique_dir
-from src.utils.translation_output import pdf_revision, translation_slot
+from src.utils.translation_output import pdf_revision, recompile_directory, translation_slot
 from src.utils.progress import log_message
-from src.agents.coordinator_agent import CoordinatorAgent
+from src.agents.coordinator_agent import CoordinatorAgent, PreviewAvailable
+from src.formats.latex.compile import CompileAttempt, LaTexCompiler
+from src.formats.latex.delivery import delivery_status, write_compile_report
 from src.formats.latex.utils import (
     archive_stem,
     extract_archive,
@@ -21,6 +23,23 @@ from src.formats.latex.utils import (
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ProjectEventCallback = Callable[[Dict[str, Any]], None]
+
+
+def recompile_translation(run_dir: str | Path) -> CompileAttempt:
+    """Compile the edited project saved with a partial PDF, in a fresh build directory."""
+    run = Path(run_dir).expanduser().resolve()
+    project = run / "project"
+    if not project.is_dir():
+        raise ValueError(f"No saved translated LaTeX project at {project}. "
+                         "Select a run directory containing project/. Older PDF-only runs have no source to recompile.")
+    with recompile_directory(run) as output:
+        compiler = LaTexCompiler(str(project), str(output))
+        compiler.compile()
+        if not compiler.attempts:
+            raise ValueError(f"No main TeX file found in {project}.")
+        attempt = compiler.attempts[-1]
+        write_compile_report(output, attempt)
+        return attempt
 
 
 def resolve_path(path_value: str) -> Path:
@@ -147,6 +166,7 @@ def run_projects(
     replace_revisions: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     completed_projects: List[Dict[str, Any]] = []
+    preview_projects: List[Dict[str, Any]] = []
     failed_projects: List[Dict[str, Any]] = []
     pending_projects = []
     cancelled_projects = []
@@ -197,6 +217,10 @@ def run_projects(
                 )
                 project["pdf_path"] = coordinator.workflow_latextrans()
                 project["revision"] = pdf_revision(Path(project["pdf_path"]))
+        except PreviewAvailable as e:
+            project["message"] = str(e)
+            preview_projects.append(project)
+            event_type = "project_preview"
         except Exception as e:
             log_message(f"Error processing project {project_name}: {e}")
             project["error"] = str(e)
@@ -213,6 +237,17 @@ def run_projects(
             if status == "failed" and any(a["status"] == "pdf_with_errors" for a in attempts):
                 status = "pdf_with_errors"
             project["compilation_status"] = status
+            attempt = attempts[-1]
+            if event_type == "project_preview":
+                attempt = next(a for a in reversed(attempts) if a.get("pdf_path")
+                               and delivery_status(a) == "preview")
+                project["pdf_path"] = attempt["pdf_path"]
+            project["delivery_status"] = {
+                "project_preview": "preview", "project_error": "failed",
+            }.get(event_type, attempt.get("delivery_status", "ready"))
+            project["diagnostics"] = attempt.get("diagnostics", [])
+            if coordinator.recovery_run:
+                project["recovery_run"] = str(coordinator.recovery_run)
         if event_callback:
             event_callback({"type": event_type, **project})
     pdfs = []
@@ -224,6 +259,7 @@ def run_projects(
     return {
         "pdfs": list(dict.fromkeys(pdfs)),
         "completed_projects": completed_projects,
+        "preview_projects": preview_projects,
         "failed_projects": failed_projects,
         "pending_projects": pending_projects,
         "cancelled_projects": cancelled_projects,

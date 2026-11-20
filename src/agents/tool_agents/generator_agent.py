@@ -6,6 +6,7 @@ import os
 import shutil
 
 from src.utils.progress import report_progress
+from src.formats.latex.delivery import DELIVERY_LABELS, delivery_status
 
 base_dir = os.getcwd()
 sys.path.append(base_dir)
@@ -53,11 +54,9 @@ class GeneratorAgent(BaseToolAgent):
         )
         self.compile_attempts = latex_compiler.attempts
         pdf_file = latex_compiler.compile()
-        if pdf_file:
-            report_progress(100, "PDF compiled.")
-            self.log(f"Successfully generated PDF for {name}.")
-        else:
-            self.log(f"Failed to compile PDF for {name}.", level="error")
+        delivery = delivery_status(self.compile_attempts[-1]) if self.compile_attempts else "failed"
+        report_progress(100, DELIVERY_LABELS[delivery])
+        self.log(f"{name}: {DELIVERY_LABELS[delivery]}.", level="error" if delivery == "failed" else "info")
         return pdf_file
 
     def _creat_transed_latex_folder(self, src_dir: str) -> str:

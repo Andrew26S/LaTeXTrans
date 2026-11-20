@@ -1,9 +1,10 @@
 import argparse
 from pathlib import Path
 
+from src.formats.latex.delivery import DELIVERY_LABELS, delivery_status
 from src.utils.progress import log_message
 from src.configuration import DEFAULT_LOCAL_CONFIG_PATH
-from src.runtime import run_translation, split_cli_items
+from src.runtime import recompile_translation, run_translation, split_cli_items
 
 
 def confirm_replace(pdf: Path) -> bool:
@@ -36,12 +37,27 @@ def main() -> int:
     parser.add_argument("--output", type=str, help="output directory.")
     parser.add_argument("--source", type=str, help="tex source directory.")
     parser.add_argument(
+        "--compile-only", nargs="?", const=".", metavar="RUN_DIR",
+        help="Compile the saved project/ in a run directory (default: current directory).",
+    )
+    parser.add_argument(
         "--all-existing",
         action="store_true",
         help="Process all existing projects under tex source directory when no --arxiv/--project is provided.",
     )
 
     args = parser.parse_args()
+    if args.compile_only is not None:
+        if args.project or args.arxiv or args.all_existing or any((args.model, args.url, args.key, args.output, args.source)):
+            parser.error("--compile-only takes a saved run directory and cannot be combined with translation options")
+        try:
+            attempt = recompile_translation(args.compile_only)
+        except (ValueError, OSError, RuntimeError) as exc:
+            log_message(f"Could not recompile: {exc}")
+            return 1
+        delivery = delivery_status(attempt)
+        log_message(DELIVERY_LABELS[delivery])
+        return 0 if delivery in {"ready", "ready_with_warnings"} else 1
     overrides = {
         key: value for key, value in vars(args).items()
         if key in ("model", "url", "key", "source", "output") and value is not None
@@ -55,16 +71,21 @@ def main() -> int:
         confirm_replace=confirm_replace,
     )
     failed = len(result["failed_projects"])
-    log_message(f"Completed {len(result['completed_projects'])} project(s), failed {failed}.")
+    completed = result["completed_projects"]
+    previews = result.get("preview_projects", [])
+    warnings = sum(p.get("delivery_status") == "ready_with_warnings" for p in completed)
+    log_message(f"Published {len(completed)} ({warnings} with warnings), previews {len(previews)}, failed {failed}.")
     if result.get("cancelled_projects"):
         log_message(f"Cancelled {len(result['cancelled_projects'])} project(s).")
-    for project in result["failed_projects"]:
-        if project.get("compilation_status") == "pdf_with_errors":
-            log_message(f"PDFs with compilation errors for {project['project_name']}:")
-            for attempt in project["compile_attempts"]:
-                if attempt["status"] == "pdf_with_errors":
-                    log_message(f"  {attempt['engine']}: {attempt['pdf_path']} (log: {attempt['log_path']})")
-    return 1 if failed else 0
+    for project in completed + previews + result["failed_projects"]:
+        status = project.get("delivery_status")
+        if status in {"preview", "ready_with_warnings"}:
+            log_message(f"{DELIVERY_LABELS[status]}: {project['pdf_path']}")
+            for note in project.get("diagnostics", []):
+                log_message(f"  {note}")
+        if project.get("recovery_run"):
+            log_message(f"Edit the saved project, then run latextrans --compile-only from {project['recovery_run']}")
+    return 1 if failed or previews else 0
 
 
 if __name__ == "__main__":

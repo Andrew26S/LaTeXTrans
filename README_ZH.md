@@ -143,7 +143,17 @@ latextrans --arxiv 2508.18791v2
 2. 执行由解析、翻译、重构和编译组成的工作流
 3. 在 outputs 文件夹保存翻译后的论文 LaTeX 项目文件和编译生成的译文PDF
 
-每篇论文的译文保存在固定路径。例如，中文版 `2410.05160` 的目标文件是 `outputs/ch_2410.05160/ch_2410.05160.pdf`。只要这个文件存在，CLI 就会询问是否重新翻译并替换，直接回车可取消。GUI 提供 **Cancel translation** 和 **Replace translation** 两个选项。只有新译文编译成功后才会替换原文件。
+每篇论文的译文保存在固定路径。例如，中文版 `2410.05160` 的目标文件是 `outputs/ch_2410.05160/ch_2410.05160.pdf`。只要这个文件存在，CLI 就会询问是否重新翻译并替换，直接回车可取消。GUI 提供 **Cancel translation** 和 **Replace translation** 两个选项。新译稿达到发布条件后才会替换原文件。
+
+运行结果分为已发布、带提示发布、预览待复核和编译失败。发布目录和运行目录中的 `compilation_report.json` 会记录原始引擎状态、退出码和诊断摘要。对于非零退出，只有日志中的错误均可识别且可恢复、TeX 最后一轮完成、并且 `pdfinfo` 或 `extractbb` 读出的页数与日志相符，才会自动发布。例如，XeLaTeX 忽略模板的连字设置可以带提示发布。中途中断、缺少章节、未知错误或页数无法验证时，预览保留在运行目录，保留先前的发布版本。缺少 PDF 或文件无法打开时显示编译失败。CLI（含仅编译模式）对可发布结果返回 0，存在待复核预览或失败时返回非零。
+
+如果编译生成了带错误的 PDF（`pdf_with_errors`），该次运行还会在 `project/` 下保留重建后的译稿工程，包括模板、图片和参考文献。修改其中的文件后，将 **run 目录**传给 CLI：
+
+```bash
+latextrans --compile-only outputs/.latextrans/ch_2410.05160/run-001
+```
+
+也可以进入该 run 目录后直接执行 `latextrans --compile-only`，或在 GUI 任务历史中点击 **Recompile saved project**。每次都会用 latexmk 调用 XeLaTeX，生成的 PDF 和日志分别保存在 `recompile-001/build_xelatex/`、`recompile-002/build_xelatex/` 等目录。仅编译无需调用模型，原诊断文件和已发布译稿都会保留。旧版只留下 PDF 和日志的运行需要重新翻译一次才能获得可编辑工程。
 
 ### 批量翻译 ArXiv 论文
 
