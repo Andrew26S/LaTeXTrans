@@ -3,12 +3,11 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 import sys
 import asyncio
-import tempfile
 
 base_dir = os.getcwd()
 sys.path.append(base_dir)
 
-from src.utils.translation_output import preserve_diagnostics, publish_translation
+from src.utils.translation_output import preserve_diagnostics, publish_translation, translation_workspace
 from src.utils.progress import log_message
 from .tool_agents.base_tool_agent import BaseToolAgent
 from .tool_agents.parser_agent import ParserAgent
@@ -58,14 +57,11 @@ class CoordinatorAgent:
         initializes the tool agent based on the provided agent name key.
         """
         root = Path(self.output_dir)
-        state = root / ".latextrans"
-        state.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="work-", dir=state) as tmp:
-            workspace = Path(tmp)
+        with translation_workspace(root, self.output_name) as workspace:
             try:
                 await self._generate(str(workspace))
             finally:
-                preserve_diagnostics(self.compile_attempts, workspace, root)
+                preserve_diagnostics(self.compile_attempts, workspace)
             final_pdf = self.destination / f"{self.output_name}.pdf"
             publish_translation(workspace, self.destination, final_pdf.name)
             if self.compile_attempts:

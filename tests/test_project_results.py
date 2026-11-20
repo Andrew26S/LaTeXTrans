@@ -236,9 +236,17 @@ class ProjectResultTests(unittest.TestCase):
 
             attempts = first["failed_projects"][0]["compile_attempts"]
             self.assertEqual([attempt["engine"] for attempt in attempts], ["xelatex"])
+            history = root / "outputs" / ".latextrans" / "ch_paper"
+            failed_build = history / "run-001" / "build_xelatex"
             for attempt in attempts:
+                self.assertEqual(Path(attempt["pdf_path"]), failed_build / "main.pdf")
+                self.assertEqual(Path(attempt["log_path"]), failed_build / "latexmk-output.txt")
                 self.assertTrue(Path(attempt["pdf_path"]).read_bytes().endswith(b"broken"))
                 self.assertTrue(Path(attempt["log_path"]).read_bytes().endswith(b"broken"))
+            for number, expected in [(2, b"good"), (3, b"fixed")]:
+                log = history / f"run-{number:03d}" / "build_xelatex" / "latexmk-output.txt"
+                self.assertTrue(log.read_bytes().endswith(expected))
+            self.assertFalse(list(history.glob("run-*/work")))
             self.assertEqual(retry["pdfs"], first["pdfs"])
             self.assertTrue(Path(translated).read_bytes().endswith(b"fixed"))
             self.assertEqual(Path(original).read_bytes(), b"broken")
