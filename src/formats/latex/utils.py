@@ -20,6 +20,7 @@ from typing import List
 import time
 from src.utils.progress import log_message, report_progress
 from pathlib import Path
+from .validation import visible_markup
 
 options = r"\[[^\[\]]*?\]"
 spaces = r"[ \t]*"
@@ -570,6 +571,7 @@ def find_extra_document_structure(src: str, trans: str) -> dict:
     Return {element: (src_count, trans_count)} for document-structure commands
     that occur more often in the translation than in the source.
     """
+    src, trans = visible_markup(src), visible_markup(trans)
     extras = {}
     for name, pattern in DOCUMENT_STRUCTURE_PATTERNS.items():
         src_count = len(pattern.findall(src))
@@ -594,11 +596,14 @@ def sanitize_llm_translation(src: str, trans: str) -> str:
         if fence:
             trans = fence.group(1)
 
+    visible_src, visible_trans = visible_markup(src), visible_markup(trans)
     for pattern in DOCUMENT_STRUCTURE_PATTERNS.values():
-        src_count = len(pattern.findall(src))
-        matches = list(pattern.finditer(trans))
+        src_count = len(pattern.findall(visible_src))
+        matches = list(pattern.finditer(visible_trans))
         for match in reversed(matches[src_count:]):
-            trans = trans[:match.start()] + trans[match.end():]
+            start, end = match.span()
+            trans = trans[:start] + trans[end:]
+            visible_trans = visible_trans[:start] + visible_trans[end:]
 
     return trans.strip()
 

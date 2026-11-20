@@ -251,91 +251,31 @@ class TranslatorAgent(BaseToolAgent):
             # else:
             #     print(f"[Warning] Environment placeholder {env_ph} not found.")
 
-    async def _retranslate_error_parts(self, secs, caps, envs, session) -> Any:
+    async def _retranslate_error_parts(self, secs, caps, envs, session) -> None:
+        parts = {}
+        for kind, items, key, translate in (
+            ("sec", secs, "section", self._translate_section),
+            ("cap", caps, "placeholder", self._translate_caption),
+            ("env", envs, "placeholder", self._translate_env),
+        ):
+            for index, part in enumerate(items):
+                parts[kind, part[key]] = (items, index, translate)
 
-        async with aiohttp.ClientSession(trust_env=True) as session:
-            sem = asyncio.Semaphore(20)  
+        semaphore = asyncio.Semaphore(20)
 
-            completed = 0
-            async def process_ErrorPart(i, error_report):
-                async with sem:
-                    error_message = []
-                    if "command_error" in error_report:
-                        error_message.append(error_report["command_error"])
-                    if "ph_error" in error_report:
-                        error_message.append(error_report["ph_error"])
-                    if "bracket_error" in error_report:
-                        error_message.append(error_report["bracket_error"])
-                    error_message = "\n".join(error_message)
+        async def repair(report):
+            entry = parts.get((report["part"], report["num_or_ph"]))
+            if entry is None:
+                return
+            items, index, translate = entry
+            message = "\n".join(report[key] for key in ("command_error", "ph_error", "bracket_error") if key in report)
+            async with semaphore:
+                items[index] = await translate(items[index], session, error_message=message)
 
-                    if error_report["part"] == "sec":
-                        async def process_section(i, sec):
-                            async with sem:
-                                if error_report["num_or_ph"] == sec["section"]:
-                                    sec_async = await self._translate_section(section=sec, error_message=error_message,
-                                                                              session=session)
-                                    return {"index": i, "result": sec_async, "is_valid": True}
-                                else:
-                                    return {"index": None, "result": None, "is_valid": False}
-
-                        tasks_sec = [process_section(i, sec) for i, sec in enumerate(secs)]
-                        for future in asyncio.as_completed(tasks_sec):
-                            result = await future
-                            
-                            if result["is_valid"]:  
-                                i = result["index"]
-                                _sec = result["result"]
-                                secs[i] = _sec
-                    elif error_report["part"] == "env":
-                        async def process_env(i, env):
-                            async with sem:
-                                if error_report["num_or_ph"] == env["placeholder"]:
-                                    env_async = await self._translate_env(env=env, error_message=error_message,
-                                                                          session=session)
-                                    return {"index": i, "result": env_async, "is_valid": True}
-                                else:
-                                    return {"index": None, "result": None, "is_valid": False}
-
-                        tasks_env = [process_env(i, env) for i, env in enumerate(envs)]
-                        for future in asyncio.as_completed(tasks_env):
-                            result = await future
-                            
-                            if result["is_valid"]:  
-                                i = result["index"]
-                                _env = result["result"]
-                                envs[i] = _env
-                    elif error_report["part"] == "cap":
-                        async def process_cap(i, cap):
-                            async with sem:
-                                if error_report["num_or_ph"] == cap["placeholder"]:
-                                    cap_async = await self._translate_caption(caption=cap, error_message=error_message,
-                                                                              session=session)
-                                    return {"index": i, "result": cap_async, "is_valid": True}
-                                else:
-                                    return {"index": None, "result": None, "is_valid": False}
-
-                        tasks_cap = [process_cap(i, cap) for i, cap in enumerate(caps)]
-                        for future in asyncio.as_completed(tasks_cap):
-                            result = await future
-                            
-                            if result["is_valid"]:  
-                                i = result["index"]
-                                _cap = result["result"]
-                                caps[i] = _cap
-                    return i
-
-            tasks_ErrorPart = [process_ErrorPart(i, error_report) for i, error_report in enumerate(self.errors_report)]
-            total_error_tasks = len(tasks_ErrorPart)
-            for future in asyncio.as_completed(tasks_ErrorPart):
-                result = await future
-                completed += 1
-
-                report_progress(int(100 * completed / total_error_tasks), f"Retranslating error parts: {completed}/{total_error_tasks}")
-
-                if result is not None:  
-                    i = result
-
-            report_progress(100, "Retranslation finished.")
+        tasks = [repair(report) for report in self.errors_report]
+        for completed, future in enumerate(asyncio.as_completed(tasks), start=1):
+            await future
+            report_progress(int(100 * completed / len(tasks)), f"Retranslating error parts: {completed}/{len(tasks)}")
 
     async def _translate_section(self, section: Dict[str, Any], session: aiohttp.ClientSession, error_message=None) -> Dict[str, Any]:
         return await self._translate_part(
