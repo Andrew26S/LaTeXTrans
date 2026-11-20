@@ -5,11 +5,16 @@ import unittest
 from pathlib import Path
 
 from src.formats.latex.reconstruct import LatexConstructor
+from tests.integration.tex_prerequisites import require_xelatex_fixture
 
 
-@unittest.skipUnless(shutil.which("xelatex"), "requires XeLaTeX with CTeX and TeX Gyre")
+TEX_GYRE = ("TeX Gyre Termes", "TeX Gyre Heros", "TeX Gyre Cursor")
+
+
+@unittest.skipUnless(shutil.which("xelatex"), "requires XeLaTeX")
 class LegacyFontTests(unittest.TestCase):
-    def compile_fonts(self, preamble, *, class_packages="", body=""):
+    def compile_fonts(self, preamble, *, class_packages="", body="", packages=(), fonts=()):
+        require_xelatex_fixture(self, packages=packages, fonts=fonts)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -36,7 +41,7 @@ class LegacyFontTests(unittest.TestCase):
                 if line.startswith(("TestRoman=", "TestSans=", "TestMono="))]
 
     def test_legacy_packages_loaded_by_the_class(self):
-        fonts = self.compile_fonts("", class_packages=r"\RequirePackage{times}")
+        fonts = self.compile_fonts("", class_packages=r"\RequirePackage{times}", packages=("times",), fonts=TEX_GYRE)
         self.assertEqual(len(fonts), 3)
         for font, family in zip(fonts, ["termes", "heros", "cursor"]):
             self.assertIn(family, font)
@@ -47,17 +52,18 @@ class LegacyFontTests(unittest.TestCase):
 \setmainfont{TeX Gyre Pagella}
 \usepackage{times,graphicx}
 \setmonofont{Latin Modern Mono Light}
-""")
+""", packages=("times", "graphicx"), fonts=("TeX Gyre Pagella", "TeX Gyre Heros", "Latin Modern Mono Light"))
         for font, family in zip(fonts, ["pagella", "heros", "latinmodernmonolight"], strict=True):
             self.assertIn(family, font)
 
     def test_independent_text_families_and_no_legacy_package(self):
         default = self.compile_fonts("% \\usepackage{times}")
-        mono = self.compile_fonts(r"\usepackage{courier}")
+        mono = self.compile_fonts(r"\usepackage{courier}", packages=("courier",), fonts=("TeX Gyre Cursor",))
         self.assertEqual(mono[:2], default[:2])
         self.assertNotIn("cursor", default[2])
         self.assertIn("cursor", mono[2])
-        times_math = self.compile_fonts(r"\usepackage{mathptmx}\usepackage[scaled=.91]{helvet}")
+        times_math = self.compile_fonts(r"\usepackage{mathptmx}\usepackage[scaled=.91]{helvet}",
+                                        packages=("mathptmx", "helvet"), fonts=("TeX Gyre Termes", "TeX Gyre Heros"))
         self.assertIn("termes", times_math[0])
         self.assertIn("heros", times_math[1])
         self.assertEqual(times_math[2], default[2])
@@ -66,7 +72,7 @@ class LegacyFontTests(unittest.TestCase):
         fonts = self.compile_fonts(r"""
 \usepackage{times}
 \RenewDocumentCommand\IfFontExistsTF{m m m}{#3}
-""")
+""", packages=("times",), fonts=("Latin Modern Roman", "Latin Modern Sans", "Latin Modern Mono Light"))
         for font, family in zip(fonts, ["roman", "sans", "mono"], strict=True):
             self.assertIn(family, font)
             self.assertRegex(font, r"bold|/b\b")
@@ -81,6 +87,7 @@ class LegacyFontTests(unittest.TestCase):
 """,
             class_packages=r"\renewcommand{\ttdefault}{pcr}",
             body=r"\begin{itemize}\item 中文\footnote{Test}\end{itemize}",
+            packages=("fontenc", "microtype"), fonts=TEX_GYRE,
         )
         for font, family in zip(fonts, ["termes", "heros", "cursor"], strict=True):
             self.assertIn(family, font)
@@ -94,6 +101,7 @@ class LegacyFontTests(unittest.TestCase):
 \setsansfont{Latin Modern Sans}
 \usepackage[T1]{fontenc}
 \usepackage{microtype}
-""", body=r"\begin{itemize}\item 中文\end{itemize}")
+""", body=r"\begin{itemize}\item 中文\end{itemize}", packages=("fontenc", "microtype"),
+            fonts=("TeX Gyre Pagella", "TeX Gyre Bonum Bold", "Latin Modern Sans"))
         self.assertIn("bonum", fonts[0])
         self.assertIn("latinmodernsans", fonts[1])

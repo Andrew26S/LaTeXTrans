@@ -121,9 +121,11 @@ def extract_compressed_files(folder_path):
         for file in files:
             archive = Path(root, file)
             stem = archive_stem(archive)
-            if not stem:
-                continue
             try:
+                if not stem:
+                    if not archive.suffix or not archive.is_file() or not tarfile.is_tarfile(archive):
+                        continue
+                    stem = archive.stem
                 target = archive.with_name(stem)
                 _unpack_cached_archive(archive, target)
                 log_message(f"Extracted {archive} to {target}")
@@ -133,21 +135,26 @@ def extract_compressed_files(folder_path):
     return failures
 
 
+_LEGACY_ARXIV_ARCHIVES = frozenset("""
+    acc-phys adap-org alg-geom ao-sci astro-ph atom-ph bayes-an chao-dyn chem-ph
+    cmp-lg comp-gas cond-mat cs dg-ga funct-an gr-qc hep-ex hep-lat hep-ph hep-th
+    math math-ph mtrl-th nlin nucl-ex nucl-th patt-sol physics plasm-ph q-alg
+    q-bio quant-ph solv-int supr-con
+""".split())
+
+
 def get_profect_dirs(folder_path):
-    """
-    Get a list of all subdirectories in the given folder.
-    
-    Args:
-        folder_path (str): Path to the folder.
-    
-    Returns:
-        list: A list of subdirectory paths.
-    """
+    """Discover local projects and individual papers in legacy arXiv caches."""
     projects = []
-    for d in os.listdir(folder_path):
-        if not d.startswith(".latextrans-") and os.path.isdir(os.path.join(folder_path, d)):
-            project_path = os.path.join(folder_path, d)
-            projects.append(project_path)
+    for path in Path(folder_path).iterdir():
+        if not path.is_dir() or path.name.startswith(".latextrans-"):
+            continue
+        if path.name in _LEGACY_ARXIV_ARCHIVES and not any(path.glob("*.tex")):
+            papers = [p for p in sorted(path.iterdir()) if p.is_dir() and is_valid_arxiv_id(f"{path.name}/{p.name}")]
+            if papers:
+                projects.extend(str(p) for p in papers)
+                continue
+        projects.append(str(path))
     return projects
 
 def has_appendix(latex_code):

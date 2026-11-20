@@ -11,6 +11,8 @@ import re
 import regex
 import asyncio
 import aiohttp
+from aiohttp.helpers import get_env_proxy_for_url
+from yarl import URL
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.configuration import term_updates_enabled
@@ -61,6 +63,15 @@ class TranslatorAgent(BaseToolAgent):
         self.term_dict = {}
         self.source_contexts = {}
 
+    def _model_session(self) -> aiohttp.ClientSession:
+        # Use environment proxy settings while keeping provider authentication
+        # exclusively under llm_config, including when a .netrc entry matches.
+        try:
+            proxy, proxy_auth = get_env_proxy_for_url(URL(self.base_url or ""))
+        except LookupError:
+            proxy, proxy_auth = None, None
+        return aiohttp.ClientSession(proxy=proxy, proxy_auth=proxy_auth, trust_env=False)
+
     async def execute(self, error_retry_count=0, Maxtry=3):
 
         pm.init_prompts(self.config["source_language"], self.config["target_language"])
@@ -78,7 +89,7 @@ class TranslatorAgent(BaseToolAgent):
 
             report_progress(5, "Translating sections...")
 
-            async with aiohttp.ClientSession(trust_env=True) as session:
+            async with self._model_session() as session:
                 sem = asyncio.Semaphore(10)  # Considering the api response speed, processing one section approximately takes about 10 seconds, and initiating a call every half second, 
                                              # around 10 should not waste api tokens
 
@@ -121,7 +132,7 @@ class TranslatorAgent(BaseToolAgent):
 
         elif self.trans_mode == 1:
 
-            async with aiohttp.ClientSession(trust_env=True) as session:
+            async with self._model_session() as session:
                 error_parts = [error_part["num_or_ph"] for error_part in self.errors_report]
                 self.log(
                     f"Starting retranslation for error parts: {error_parts}, attempt {error_retry_count + 1}/{Maxtry}.")

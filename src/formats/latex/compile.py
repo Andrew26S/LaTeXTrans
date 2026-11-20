@@ -117,11 +117,11 @@ class LaTexCompiler:
                 attempt.update(delivery_status=delivery, diagnostics=notes)
                 for note in notes:
                     log_message(note)
-                if delivery == "ready_with_warnings":
-                    return attempt["pdf_path"]
-                if delivery != "ready":
+                if delivery not in {"ready", "ready_with_warnings"}:
                     continue
+            elif attempt["status"] != "success":
+                continue
             if attempt["status"] == "success":
                 marker.write_text("Compilation successful\n", encoding="utf-8")
-                return attempt["pdf_path"]
+            return attempt["pdf_path"]
         return None

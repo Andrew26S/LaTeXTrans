@@ -149,7 +149,9 @@ Each paper has a fixed output path for each target language. For example, the Ch
 
 The project result distinguishes a published PDF, a published PDF with warnings, a preview for review, and a failed build. The original engine status and exit code remain in `compilation_report.json` alongside the published PDF and in its run directory. For a nonzero exit, automatic publication requires all identified errors to be recognized recoverable diagnostics, a completed final TeX pass and a matching page count from `pdfinfo` or `extractbb`. One example is XeLaTeX ignoring a template’s ligature setting. An interruption, missing chapter, unknown error or unverified page count yields a preview in the run directory and preserves the previous publication. An unreadable or missing PDF is a failure. The CLI exits with zero for publishable results and nonzero for previews or failures, including in compile-only mode.
 
-When a build produces a PDF with errors (`pdf_with_errors`), the run also retains the reconstructed LaTeX project, including its templates, figures and bibliography. Edit the files under `project/` and pass the **run directory** to the CLI:
+A successful build with unresolved references or citations on its final pass is published with warnings. The report records the affected keys when TeX identifies them.
+
+Once reconstruction finishes, a failed build, a preview, or a PDF published with warnings retains the translated source, templates, figures and bibliography in the run’s `project/` directory. This includes failures where latexmk could not start or produced no PDF. After editing the project or installing a missing dependency, recompile from the **run directory**.
 
 ```bash
 latextrans --compile-only outputs/.latextrans/ch_2410.05160/run-001

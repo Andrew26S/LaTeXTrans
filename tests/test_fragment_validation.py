@@ -49,6 +49,24 @@ class FragmentValidationTests(unittest.TestCase):
         errors, _ = validate_fragment(r"\ref{x}", r"\refstepcounter{x}")
         self.assertIn("'x'", errors["command_error"])
 
+    def test_unbraced_inputs_are_compared_by_filename(self):
+        for filename, argument in [("chapters/results.tex", "chapters/results.tex"),
+                                   ("results table.tex", '"results table".tex')]:
+            with self.subTest(filename=filename):
+                source = "See below.\n\\input " + argument + "\n"
+                self.assertFalse(validate_fragment(source, r"见下文。\input{" + filename + "}")[0])
+                self.assertFalse(validate_fragment(source, r'见下文。\input{"' + filename + '"}')[0])
+                for replacement in ("见下文。", r"见下文。\input wrong"):
+                    message = validate_fragment(source, replacement)[0]["command_error"]
+                    self.assertIn(filename, message)
+                    self.assertIn("line 2", message)
+
+    def test_unparsed_protected_command_cannot_disappear(self):
+        for command in (r"\input\filename", r"\ref\labelname"):
+            source = "See " + command
+            self.assertFalse(validate_fragment(source, "见 " + command)[0])
+            self.assertIn("expected 1, found 0", validate_fragment(source, "见下文。")[0]["command_error"])
+
     def test_citations_can_move_and_regroup_with_their_notes(self):
         source = r"See \citep[see {also}][p.~17]{a,b} and \citep{c}."
         translation = r"\citep{c}、\citep[另见][第17页]{b} 和 \citep[参见][第17页]{a}。"

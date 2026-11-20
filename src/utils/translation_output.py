@@ -3,7 +3,7 @@ import os
 import shutil
 from stat import S_ISREG
 import tempfile
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from itertools import count
 from pathlib import Path
 from typing import Iterator
@@ -52,12 +52,9 @@ def _project_state(root: Path, name: str) -> Path:
 def translation_slot(root: Path, name: str) -> Iterator[Path]:
     project = _project_state(root, name)
     destination = root / name
-    # A running older client may still hold the per-paper lock at its original path.
+    # Older clients coordinate publication using only the original lock.
     legacy_lock = project.parent / f"{name}.lock"
-    with ExitStack() as locks:
-        locks.enter_context(_lock(project / "translation.lock", name))
-        if legacy_lock.is_file():
-            locks.enter_context(_lock(legacy_lock, name))
+    with _lock(project / "translation.lock", name), _lock(legacy_lock, name):
         if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
             raise ValueError(f"Invalid output directory: {destination}")
         yield destination

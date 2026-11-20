@@ -71,8 +71,14 @@ def assess_pdf(pdf: Path | None, log: Path, engine: str, exit_code: int | None) 
     incomplete = _INCOMPLETE.search(last_pass)
     if incomplete:
         return "preview", [incomplete[0].strip()]
+    unresolved = list(dict.fromkeys(
+        f"Unresolved {kind.lower()}: {key}"
+        for kind, key in re.findall(r"(Citation|Reference) [`']([^'\n]+)' on page \S+ undefined", last_pass)
+    ))
+    if not unresolved and re.search(r"There were undefined (?:references|citations)\.", last_pass):
+        unresolved.append("The final TeX pass reported unresolved citations or references.")
     if exit_code == 0:
-        return "ready", []
+        return ("ready_with_warnings", unresolved) if unresolved else ("ready", [])
     outputs = _OUTPUT.findall(last_pass)
     if not outputs or Path(outputs[-1][0]).stem != pdf.stem or int(outputs[-1][1]) != pages:
         return "preview", ["The final TeX page count could not be matched to this PDF."]
@@ -101,11 +107,7 @@ def assess_pdf(pdf: Path | None, log: Path, engine: str, exit_code: int | None) 
             notes.append(note)
     if not notes:
         return "preview", ["The compiler error could not be identified."]
-    for kind, key in re.findall(r"(Citation|Reference) [`']([^']+)' on page \S+ undefined", last_pass):
-        note = f"Unresolved {kind.lower()}: {key}"
-        if note not in notes:
-            notes.append(note)
-    return "ready_with_warnings", notes
+    return "ready_with_warnings", notes + unresolved
 
 
 def write_compile_report(directory: Path, attempt: dict) -> None:

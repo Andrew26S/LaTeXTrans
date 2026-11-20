@@ -37,6 +37,7 @@ class SharedConfigurationTests(unittest.TestCase):
                 patch("src.runtime.run_translation", wraps=run_translation) as run,
                 patch("src.runtime.CoordinatorAgent") as agent,
             ):
+                agent.return_value.recovery_run = None
                 agent.return_value.workflow_latextrans.return_value = str(root / "paper.pdf")
                 app.run(timeout=30)
                 app.text_input(key=f"{first}:model").set_value("edited-model").run()
@@ -87,6 +88,7 @@ class SharedConfigurationTests(unittest.TestCase):
                 patch("src.runtime.run_translation", wraps=run_translation) as run,
                 patch("src.runtime.CoordinatorAgent") as agent,
             ):
+                agent.return_value.recovery_run = None
                 agent.return_value.workflow_latextrans.side_effect = [ValueError("failed"), "ok.pdf", "ok.pdf", "ok.pdf"]
                 app.run(timeout=30)
                 app.text_input(key=f"{path}:{field}").set_value(value).run()
@@ -94,6 +96,9 @@ class SharedConfigurationTests(unittest.TestCase):
                 failures = app.session_state.job_history[0]["failed_projects"]
                 self.assertEqual([f["arxiv_id"] for f in failures], papers[:1])
                 original_provider = dict(agent.call_args.kwargs["config"]["llm_config"])
+                config.update(source_language="fr", target_language="ja", mode=2, update_term=True,
+                              user_term="different.csv", category={papers[0]: ["different"], "new": ["cs.AI"]},
+                              tex_sources_dir=str(root / "other"), output_dir=str(root / "new"))
                 config["llm_config"] = {"base_url": "https://second.invalid/chat", "api_key": "new-key", "model": "new"}
                 path.write_text(toml.dumps(config))
                 for label in ("Retry Failed Projects", "Retry Failed Projects from This Run"):
@@ -101,9 +106,18 @@ class SharedConfigurationTests(unittest.TestCase):
                     self.assertFalse(app.exception)
                     self.assertEqual(run.call_args.kwargs["overrides"], {
                         "llm_config": original_provider, "replace_paper_list": True,
-                        "paper_list": papers[:1], "category": {papers[0]: ["cs.AI"]},
+                        "paper_list": papers[:1], "category": {papers[0]: ["cs.AI"], papers[1]: []},
+                        "replace_category": True,
+                        "source_language": "en", "target_language": "ch", "mode": 0, "update_term": False,
+                        "user_term": "", "source": str(root / "sources"), "output": str(root / "out"),
                     })
-                    self.assertEqual(agent.call_args.kwargs["config"]["llm_config"], original_provider)
+                    effective = agent.call_args.kwargs["config"]
+                    self.assertEqual(effective["llm_config"], original_provider)
+                    self.assertEqual(effective["category"], {papers[0]: ["cs.AI"], papers[1]: []})
+                    self.assertEqual((effective["source_language"], effective["target_language"], effective["mode"],
+                                      effective["update_term"], effective["user_term"]), ("en", "ch", 0, False, ""))
+                    self.assertEqual(agent.call_args.kwargs["project_dir"], str(root / "sources" / papers[0]))
+                    self.assertEqual(agent.call_args.kwargs["output_dir"], str(root / "out"))
                     self.assertEqual(app.session_state.job_history[0]["inputs"], papers[:1])
                     self.assertFalse(app.session_state.job_history[0]["failed_projects"])
 

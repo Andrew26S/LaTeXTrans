@@ -10,11 +10,46 @@ from src.agents import coordinator_agent
 from src.formats.latex.compile import LaTexCompiler
 from src.formats.latex.utils import compile_with_latexmk
 from src.runtime import recompile_translation, run_projects
+from tests.integration.tex_prerequisites import require_xelatex_fixture
 
 
 class CompilerIntegrationTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("latexmk") and shutil.which("xelatex"), "requires XeLaTeX and latexmk")
+    def test_recompile_without_retranslation_after_missing_compiler(self):
+        require_xelatex_fixture(self)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            src = root / "paper"
+            src.mkdir()
+            source = r"\documentclass{article}\begin{document}Original.\end{document}"
+            (src / "main.tex").write_text(source)
+            maps = {"sections_map.json": [{"trans_content": source.replace("Original.", r"译文 \ref{missing}.")}]}
+            with (
+                patch.object(coordinator_agent, "ParserAgent"),
+                patch.object(coordinator_agent, "TranslatorAgent") as translator,
+                patch.object(coordinator_agent, "ValidatorAgent") as validator,
+                patch.object(coordinator_agent.GeneratorAgent, "read_file", side_effect=lambda p, fmt: maps.get(p.name, [])),
+            ):
+                translator.return_value.execute = AsyncMock()
+                validator.return_value.execute.return_value = []
+                with patch("src.formats.latex.compile.subprocess.run", side_effect=FileNotFoundError("missing latexmk")):
+                    result = run_projects({}, [str(src)], str(root / "out"))
+                failure, = result["failed_projects"]
+                self.assertEqual(failure["compilation_status"], "failed")
+                run = Path(failure["recovery_run"])
+                self.assertIn("译文", (run / "project/main.tex").read_text())
+                self.assertFalse((run / "work").exists())
+                shutil.rmtree(src)
+                attempt = recompile_translation(run)
+                self.assertEqual((attempt["exit_code"], attempt["status"]), (0, "success"))
+                self.assertEqual(attempt["delivery_status"], "ready_with_warnings")
+                self.assertIn("Unresolved reference: missing", attempt["diagnostics"])
+                self.assertTrue(Path(attempt["pdf_path"]).is_file())
+                translator.return_value.execute.assert_awaited_once()
+
     @unittest.skipUnless(shutil.which("latexmk") and shutil.which("xelatex"), "requires XeLaTeX with CTeX")
     def test_recompile_edited_project_after_partial_pdf(self):
+        require_xelatex_fixture(self, packages=("microtype",))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             src = root / "paper"
@@ -53,7 +88,7 @@ class CompilerIntegrationTests(unittest.TestCase):
                 self.assertEqual(retry["status"], "pdf_with_errors")
                 (project / "local.sty").write_text(r"\ProvidesPackage{local}")
                 fixed = recompile_translation(run)
-                self.assertEqual(fixed["status"], "success")
+                self.assertEqual(fixed["status"], "success", Path(fixed["log_path"]).read_text(errors="replace")[-2500:])
                 self.assertTrue(Path(fixed["pdf_path"]).is_relative_to(run / "recompile-002"))
                 self.assertTrue(Path(retry["pdf_path"]).is_file())
                 self.assertEqual(Path(original["pdf_path"]).read_bytes(), original_pdf)

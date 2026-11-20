@@ -47,6 +47,15 @@ class PdfDeliveryTests(unittest.TestCase):
         self.assertEqual(len(notes), 3)
         self.assertIn("Unresolved reference: fig:a", notes)
 
+    def test_successful_exit_uses_only_final_pass_reference_warnings(self):
+        first = "LaTeX Warning: Reference `previous' on page 1 undefined.\nThis is XeTeX, Version 1\n"
+        final = "LaTeX Warning: Reference `missing' on page 2 undefined.\n"
+        citation = "Package natbib Warning: Citation `key' on page 2 undefined.\n"
+        self.assertEqual(self.assess(first, exit_code=0), ("ready", []))
+        self.assertEqual(self.assess(first + final * 2 + citation, exit_code=0), (
+            "ready_with_warnings", ["Unresolved reference: missing", "Unresolved citation: key"],
+        ))
+
     def test_interruption_missing_input_and_unrecognized_errors_override_known_notices(self):
         for extra in [
             "! Emergency stop.\n", "./sections/a.tex:18: Undefined control sequence.\n",

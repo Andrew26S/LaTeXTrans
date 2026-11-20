@@ -23,6 +23,7 @@ class GeneratorAgent(BaseToolAgent):
         self.project_dir = project_dir
         self.output_dir = output_dir  # Output directory for parsed files
         self.compile_attempts = []
+        self.reconstructed = False
 
     def execute(self) -> Any:
 
@@ -46,6 +47,7 @@ class GeneratorAgent(BaseToolAgent):
             newcommands=newcommands, output_latex_dir=transed_latex_dir,
         )
         latex_constructor.construct()
+        self.reconstructed = True
 
         report_progress(80, "Compiling PDF document...")
         latex_compiler = LaTexCompiler(

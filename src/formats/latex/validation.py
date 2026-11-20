@@ -41,6 +41,8 @@ _ARGUMENT = regex.compile(
 
 _CODE_NAME = re.compile(r"\s*\{([A-Za-z][A-Za-z0-9_]*(?:(?:\\_)[A-Za-z0-9_]*)*)\}")
 _STAR = re.compile(r"\s*\*")
+# TeX accepts a space-delimited filename after \input, with quotes for spaces.
+_INPUT_FILENAME = re.compile(r'\s*((?:[^\s{}\\%"]|"[^"{}\n\\%]*")+)')
 
 
 def _targets(name, argument, source):
@@ -48,6 +50,8 @@ def _targets(name, argument, source):
     if name in {"url", "nolinkurl", "path", "href"}:
         start, end = argument.span("value")
         keys = source[start + 1:end - 1]
+    elif name == "input":
+        keys = keys.replace('"', "")
     notes = argument.captures("note")
     if name == "hyperref":
         # Only the optional label is fixed, the mandatory argument is link text.
@@ -91,6 +95,7 @@ def _context(text: str, pos: int) -> str:
 class _Fragment:
     identifiers: dict[str, int] = field(default_factory=dict)
     targets: dict = field(default_factory=lambda: defaultdict(list))
+    unparsed_commands: dict = field(default_factory=lambda: defaultdict(list))
     structure: list = field(default_factory=list)
     open_groups: list = field(default_factory=list)
     extra_closes: list = field(default_factory=list)
@@ -110,9 +115,15 @@ def _inspect_command(source, visible, token, result):
         result.structure.append((value + star, pos))
     if name in _KEY_COMMANDS:
         argument = _ARGUMENT.match(visible, token.end())
-        if argument:
-            for target in _targets(name, argument, source):
-                result.targets[target].append(pos)
+        targets = list(_targets(name, argument, source)) if argument else []
+        if not argument and name == "input":
+            filename = _INPUT_FILENAME.match(visible, token.end())
+            if filename:
+                targets.append((name, filename[1].replace('"', ""), ()))
+        if not targets:
+            result.unparsed_commands[name].append(pos)
+        for target in targets:
+            result.targets[target].append(pos)
     elif name.isalpha() and name not in _STRUCTURAL_COMMANDS and name not in {"begin", "end", "eg", "ie"}:
         result.macros[value] += 1
         if name == "texttt":
@@ -229,6 +240,14 @@ def validate_fragment(source: str, translation: str) -> tuple[dict[str, str], li
                                 "the original heading, caption and environment structure")
     if structure:
         commands.append(structure)
+    for name in sorted(original.unparsed_commands.keys() | translated.unparsed_commands.keys()):
+        expected = original.unparsed_commands.get(name, [])
+        actual = translated.unparsed_commands.get(name, [])
+        if len(expected) != len(actual):
+            context = ("original " + _context(source, expected[0]) if expected
+                       else "translation " + _context(translation, actual[0]))
+            commands.append(f"Preserve \\{name} with its original argument "
+                            f"(unparsed occurrences: expected {len(expected)}, found {len(actual)}; {context}).")
     for target in sorted(original.targets.keys() | translated.targets.keys()):
         expected = original.targets.get(target, [])
         actual = translated.targets.get(target, [])

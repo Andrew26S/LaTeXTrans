@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +65,8 @@ class TranslationSessionTests(unittest.TestCase):
     def test_model_requests_use_environment_proxy_settings_in_each_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            netrc = root / "netrc"
+            netrc.write_text("machine provider.invalid login other password dummy\n")
             for name in ("captions", "envs", "inputs", "newcommands"):
                 (root / f"{name}_map.json").write_text("[]")
             for mode in (0, 1, 2):
@@ -72,15 +75,26 @@ class TranslationSessionTests(unittest.TestCase):
                         {"section": "1", "content": "Hello.", "trans_content": "Old translation"},
                     ]))
                     agent = TranslatorAgent(
-                        config={"source_language": "en", "target_language": "ch", "llm_config": {}},
+                        config={"source_language": "en", "target_language": "ch",
+                                "llm_config": {"base_url": "https://provider.invalid/chat", "api_key": "configured"}},
                         trans_mode=mode, project_dir=directory, output_dir=directory,
                         errors_report=[{"part": "sec", "num_or_ph": "1"}],
                     )
-                    with mock.patch.object(agent, "_post_chat", new_callable=mock.AsyncMock, return_value="译文") as post:
+                    env = {"NETRC": str(netrc), "https_proxy": "http://user:pass@proxy.invalid:8080",
+                           "no_proxy": "provider.invalid" if mode == 2 else ""}
+                    with (
+                        mock.patch.dict(os.environ, env, clear=True),
+                        mock.patch.object(aiohttp.TCPConnector, "connect", side_effect=RuntimeError("request captured")) as connect,
+                        self.assertRaisesRegex(RuntimeError, "request captured"),
+                    ):
                         run(agent.execute())
-                    post.assert_awaited_once()
-                    session = post.await_args.args[1]
-                    self.assertTrue(session.trust_env)
+                    request = connect.await_args.args[0]
+                    self.assertEqual(request.headers["Authorization"], "Bearer configured")
+                    if mode == 2:
+                        self.assertIsNone(request.proxy)
+                    else:
+                        self.assertEqual(request.proxy.host, "proxy.invalid")
+                        self.assertEqual(request.proxy_auth, aiohttp.BasicAuth("user", "pass"))
 
 
 class PostChatTests(unittest.TestCase):

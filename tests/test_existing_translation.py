@@ -10,7 +10,7 @@ from streamlit.testing.v1 import AppTest
 from main import main
 from src.agents import coordinator_agent
 from src.runtime import run_translation
-from src.utils.translation_output import translation_slot
+from src.utils.translation_output import _lock, translation_slot
 
 
 class ExistingTranslationTests(unittest.TestCase):
@@ -78,7 +78,7 @@ class ExistingTranslationTests(unittest.TestCase):
         self.assertIn("compilation failed", failure["error"])
         self.assertEqual(self.pdf.read_bytes(), b"newer translation")
 
-    def test_repeated_archive_uses_the_same_output_and_reuses_prepared_source_on_confirmation(self):
+    def test_repeated_archive_extracts_only_after_confirmation(self):
         archive = self.sources.parent / "local.zip"
         with zipfile.ZipFile(archive, "w") as source:
             source.writestr("main.tex", "source")
@@ -87,15 +87,28 @@ class ExistingTranslationTests(unittest.TestCase):
         expected = self.output / "ch_local/ch_local.pdf"
         self.assertEqual(first["pdf_path"], str(expected))
         pending, = run_translation(**request)["pending_projects"]
+        cancelled, = run_translation(**request, confirm_replace=lambda pdf: False)["cancelled_projects"]
+        self.assertEqual(cancelled["input_archive"], str(archive))
+        self.assertEqual(list(self.sources.glob("local*")), [self.sources / "local"])
         self.assertEqual(self.parse.call_count, 1)
         replacement = self.sources.parent / "new.pdf"
         replacement.write_bytes(b"updated")
         self.generator.execute.return_value = str(replacement)
-        with patch("src.runtime.extract_local_archive", side_effect=AssertionError("already extracted")):
-            updated, = run_translation(**pending["replace_request"])["completed_projects"]
+        updated, = run_translation(**pending["replace_request"])["completed_projects"]
+        self.assertEqual(updated["project_dir"], str(self.sources / "local_1"))
         self.assertEqual(updated["pdf_path"], str(expected))
         self.assertEqual(expected.read_bytes(), b"updated")
         self.assertEqual(list(self.output.glob("ch_local*")), [expected.parent])
+
+    def test_legacy_client_and_current_client_share_the_first_publication_lock(self):
+        name = "ch_fresh"
+        legacy = self.output / ".latextrans" / (name + ".lock")
+        with translation_slot(self.output, name):
+            with self.assertRaisesRegex(RuntimeError, "already using"), _lock(legacy, name):
+                pass
+        with _lock(legacy, name):
+            with self.assertRaisesRegex(RuntimeError, "already using"), translation_slot(self.output, name):
+                pass
 
     def test_concurrent_attempt_cannot_publish_to_the_same_destination(self):
         with translation_slot(self.output, self.name):

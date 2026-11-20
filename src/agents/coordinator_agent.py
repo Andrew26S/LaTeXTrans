@@ -111,27 +111,30 @@ class CoordinatorAgent:
         generator_agent = GeneratorAgent(config=self.config,
                                          project_dir=self.project_dir,
                                          output_dir=transed_project_dir)
-        try:
-            generated_pdf = generator_agent.execute()
-        finally:
-            self.compile_attempts = list(generator_agent.compile_attempts)
         workspace = Path(transed_project_dir)
         translated_project = workspace / Path(self.project_dir).name
-        partial = any(a.get("pdf_path") and delivery_status(a) != "ready" for a in self.compile_attempts)
-        if partial and translated_project.is_dir():
-            if generated_pdf:
-                shutil.copytree(translated_project, workspace.parent / "project")
-            else:
-                translated_project.rename(workspace.parent / "project")
-            self.recovery_run = workspace.parent
-            log_message(f"Saved translated LaTeX project in {self.recovery_run / 'project'}")
+        publishable = False
+        try:
+            generated_pdf = generator_agent.execute()
+            publishable = bool(generated_pdf and os.path.isfile(generated_pdf) and os.path.getsize(generated_pdf))
+        finally:
+            self.compile_attempts = list(generator_agent.compile_attempts)
+            partial = any(a.get("pdf_path") and delivery_status(a) != "ready" for a in self.compile_attempts)
+            if generator_agent.reconstructed and translated_project.is_dir() and (not publishable or partial):
+                saved = workspace.parent / "project"
+                if publishable:
+                    shutil.copytree(translated_project, saved)
+                else:
+                    translated_project.rename(saved)
+                self.recovery_run = saved.parent
+                log_message(f"Saved translated LaTeX project in {saved}")
         if not generated_pdf:
             if any(delivery_status(a) == "preview" for a in self.compile_attempts):
                 raise PreviewAvailable("PDF generated; review the compilation diagnostics.")
             if partial:
                 raise RuntimeError("The generated PDF could not be opened. See the compilation report.")
             raise RuntimeError("Compilation produced no translated PDF.")
-        if not os.path.isfile(generated_pdf) or os.path.getsize(generated_pdf) == 0:
+        if not publishable:
             raise RuntimeError(f"Generated PDF is missing or empty: {generated_pdf}")
 
         target = workspace / f"{self.output_name}.pdf"

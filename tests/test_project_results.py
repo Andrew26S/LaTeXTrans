@@ -140,6 +140,27 @@ class ProjectResultTests(unittest.TestCase):
             self.assertIn("missing latexmk", Path(attempt["log_path"]).read_text())
             self.assertFalse(marker.exists())
 
+    def test_compiler_exception_before_first_attempt_keeps_reconstructed_project(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "paper"
+            project.mkdir()
+            main = r"\documentclass{article}\begin{document}Original.\end{document}"
+            (project / "main.tex").write_text(main)
+            maps = {"sections_map.json": [{"trans_content": main.replace("Original.", "译文")}]}
+            with (
+                patch.object(coordinator_agent, "ParserAgent"),
+                patch.object(coordinator_agent, "TranslatorAgent") as translator,
+                patch.object(coordinator_agent, "ValidatorAgent") as validator,
+                patch.object(coordinator_agent.GeneratorAgent, "read_file", side_effect=lambda p, fmt: maps.get(p.name, [])),
+                patch.object(LaTexCompiler, "compile", side_effect=OSError("build unavailable")),
+            ):
+                translator.return_value.execute = AsyncMock()
+                validator.return_value.execute.return_value = []
+                failed, = run_projects({}, [str(project)], str(root / "out"))["failed_projects"]
+            self.assertEqual(failed["error"], "build unavailable")
+            self.assertIn("译文", (Path(failed["recovery_run"]) / "project/main.tex").read_text())
+
     def test_standalone_and_agent_publish_reported_pdf_and_map_from_their_working_dirs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

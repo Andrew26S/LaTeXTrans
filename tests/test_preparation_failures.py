@@ -207,6 +207,29 @@ class PreparationFailureTests(unittest.TestCase):
             prepare_arxiv_source(paper, str(self.sources))
         self.assertTrue(archive.exists())
 
+    def test_discover_legacy_papers_individually_and_keep_local_projects_together(self):
+        papers = ["hep-th/9901001", "hep-th/9901002v2", "local"]
+        for name in [*papers, "local/9901001"]:
+            project = self.sources / name
+            project.mkdir(parents=True)
+            (project / "main.tex").touch()
+        with patch("src.runtime.CoordinatorAgent") as agent:
+            result = run_translation(str(self.config), all_existing=True)
+        self.assertCountEqual(result["projects"], [str(self.sources / name) for name in papers])
+        self.assertEqual(agent.call_count, 3)
+
+    def test_cached_tar_with_only_compression_suffix(self):
+        project = self.sources / "paper"
+        project.mkdir(parents=True)
+        archive = project / "figures.gz"
+        with tarfile.open(archive, "w:gz") as source:
+            source.addfile(tarfile.TarInfo("plot.pdf"), io.BytesIO())
+        with patch("src.runtime.CoordinatorAgent"):
+            result = run_translation(str(self.config), all_existing=True)
+        self.assertFalse(result["failed_projects"])
+        self.assertTrue((project / "figures/plot.pdf").is_file())
+        self.assertFalse(archive.exists())
+
     def test_compressed_tar_projects_and_nested_assets(self):
         self.sources.mkdir()
         paper = self.sources / "existing"

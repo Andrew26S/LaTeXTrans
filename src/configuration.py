@@ -45,7 +45,9 @@ def load_runtime_config(
     if type(mode) is not int or mode not in (0, 1, 2):
         raise ValueError("mode must be an integer: 0, 1 or 2.")
 
-    if overrides.get("category"):
+    if overrides.get("replace_category"):
+        config["category"] = dict(overrides.get("category") or {})
+    elif overrides.get("category"):
         config.setdefault("category", {}).update(overrides["category"])
 
     extra_papers = overrides.get("paper_list") or []

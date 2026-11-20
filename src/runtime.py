@@ -26,7 +26,7 @@ ProjectEventCallback = Callable[[Dict[str, Any]], None]
 
 
 def recompile_translation(run_dir: str | Path) -> CompileAttempt:
-    """Compile the edited project saved with a partial PDF, in a fresh build directory."""
+    """Compile a retained translation in a fresh build directory."""
     run = Path(run_dir).expanduser().resolve()
     project = run / "project"
     if not project.is_dir():
@@ -130,10 +130,13 @@ def prepare_projects(
             if os.path.isdir(path):
                 projects.append(path)
             elif is_local_archive(path):
-                extracted = extract_local_archive(path, projects_dir)
-                projects.append(extracted)
-                if archive_inputs is not None:
-                    archive_inputs[extracted] = path
+                if archive_inputs is None:
+                    projects.append(extract_local_archive(path, projects_dir))
+                else:
+                    # The output name comes from the archive. Extraction can
+                    # wait until the publication lock and replacement decision.
+                    archive_inputs[path] = path
+                    projects.append(path)
             else:
                 record_failure(path, "Invalid local project path.")
         except Exception as e:
@@ -170,6 +173,7 @@ def run_projects(
     failed_projects: List[Dict[str, Any]] = []
     pending_projects = []
     cancelled_projects = []
+    prepared_projects = []
     total_projects = len(projects) + len(preparation_failures)
     for idx, failure in enumerate(preparation_failures, start=1):
         entry = {**failure, "index": idx, "total": total_projects}
@@ -181,6 +185,8 @@ def run_projects(
     paper_by_path = {str(sources / paper): paper for paper in extract_arxiv_ids(config.get("paper_list", []))}
     for idx, project_dir in enumerate(projects, start=len(preparation_failures) + 1):
         archive = (archive_inputs or {}).get(project_dir)
+        if project_dir != archive:
+            prepared_projects.append(project_dir)
         project_name = archive_stem(Path(archive)) if archive else os.path.basename(project_dir)
         log_message(f"[{idx}/{total_projects}] Processing {project_name}")
         project = {
@@ -211,6 +217,10 @@ def run_projects(
                         if event_callback:
                             event_callback({"type": "project_pending" if deferred else "project_cancelled", **project})
                         continue
+                if project_dir == archive:
+                    project_dir = extract_local_archive(archive, str(sources))
+                    project["project_dir"] = project_dir
+                    prepared_projects.append(project_dir)
                 coordinator = CoordinatorAgent(
                     config={**config, "arxiv_id": paper}, project_dir=project_dir, output_dir=output_dir,
                     destination=destination, output_name=output_name,
@@ -222,7 +232,7 @@ def run_projects(
             preview_projects.append(project)
             event_type = "project_preview"
         except Exception as e:
-            log_message(f"Error processing project {project_name}: {e}")
+            log_message(f"Error processing project {archive or project_name}: {e}")
             project["error"] = str(e)
             failed_projects.append(project)
             event_type = "project_error"
@@ -246,8 +256,8 @@ def run_projects(
                 "project_preview": "preview", "project_error": "failed",
             }.get(event_type, attempt.get("delivery_status", "ready"))
             project["diagnostics"] = attempt.get("diagnostics", [])
-            if coordinator.recovery_run:
-                project["recovery_run"] = str(coordinator.recovery_run)
+        if coordinator is not None and coordinator.recovery_run:
+            project["recovery_run"] = str(coordinator.recovery_run)
         if event_callback:
             event_callback({"type": event_type, **project})
     pdfs = []
@@ -257,6 +267,7 @@ def run_projects(
         original = translated.parent / name / f"{name}.pdf"
         pdfs.extend(str(path) for path in (translated, original) if path.is_file())
     return {
+        "projects": prepared_projects,
         "pdfs": list(dict.fromkeys(pdfs)),
         "completed_projects": completed_projects,
         "preview_projects": preview_projects,
@@ -291,7 +302,8 @@ def build_retry_request(
         "project_items": [item["project_dir"] for item in failures if "arxiv_id" not in item],
         "all_existing": False,
     }
-    prepared_archives = {item["project_dir"]: item["input_archive"] for item in failures if "input_archive" in item}
+    prepared_archives = {item["project_dir"]: item["input_archive"] for item in failures
+                         if "input_archive" in item and item["input_archive"] != item["project_dir"]}
     if prepared_archives:
         request["prepared_archives"] = prepared_archives
     return request
@@ -322,19 +334,23 @@ def run_translation(
         preparation_failures=preparation_failures, archive_inputs=archive_inputs,
         confirm_replace=confirm_replace, replace_revisions=replace_revisions,
     )
+    retry_settings = {
+        "source": projects_dir, "output": output_dir,
+        "source_language": config["source_language"], "target_language": config["target_language"],
+        "mode": config.get("mode", 0), "user_term": config.get("user_term", ""),
+        "update_term": config["update_term"], "llm_config": dict(config["llm_config"]),
+        "category": dict(config.get("category", {})), "replace_category": True,
+    }
     for project in project_status["pending_projects"]:
-        request = build_retry_request([project], config_path=config_path, overrides=overrides, llm_config=config["llm_config"])
-        request["overrides"].update(source=projects_dir, output=output_dir, target_language=config["target_language"])
+        request = build_retry_request([project], config_path=config_path, overrides=retry_settings)
         request["replace_revisions"] = {project["pdf_path"]: project["revision"]}
         project["replace_request"] = request
     return {
         "config": config,
-        "projects": projects,
         "projects_dir": projects_dir,
         "output_dir": output_dir,
         "retry_request": build_retry_request(
-            project_status["failed_projects"], config_path=config_path, overrides=overrides,
-            llm_config=config["llm_config"],
+            project_status["failed_projects"], config_path=config_path, overrides=retry_settings,
         ) if project_status["failed_projects"] else None,
         **project_status,
     }
